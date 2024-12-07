@@ -22,12 +22,12 @@ class GitCommit:
 
 
 class GitService:
-    """Service for interacting with git repositories."""
+    """Service for interacting with Git repositories."""
 
     def __init__(self, repo_path: Optional[str] = None):
         """Initialize the git service."""
         self.repo_path = repo_path
-        self.cwd = repo_path or os.getcwd()
+        self.cwd = repo_path
 
     def _run_command(self, command: str) -> str:
         """Run a git command and return its output."""

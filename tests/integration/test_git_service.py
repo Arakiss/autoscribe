@@ -56,10 +56,10 @@ def test_get_latest_tag(git_repo):
     service._run_command('git config --global user.email "test@example.com"')
     service._run_command('git config --global user.name "Test User"')
     service._run_command('git init')
-    service._run_command('touch README.md')
+    service._run_command('echo "# Test Repository" > README.md')
     service._run_command('git add README.md')
     service._run_command('git commit -m "Initial commit"')
-    service._run_command('git tag v1.0.0')
+    service._run_command('git tag -a v1.0.0 -m "Version 1.0.0"')
 
     # Test with tag
     result = service._run_command('git tag')
@@ -67,6 +67,9 @@ def test_get_latest_tag(git_repo):
     assert service.get_latest_tag() == "v1.0.0"
 
     # Test with multiple tags
+    service._run_command('echo "## Update" >> README.md')
+    service._run_command('git add README.md')
+    service._run_command('git commit -m "Update README"')
     service._run_command('git tag -a v1.1.0 -m "Version 1.1.0"')
     assert service.get_latest_tag() == "v1.1.0"
 

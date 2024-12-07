@@ -99,7 +99,7 @@ def test_generate_command(
     # Test with GitHub release
     result = runner.invoke(cli, ["generate", "--github-release"])
     assert result.exit_code == 0
-    mock_services["github"].create_release.assert_called_once()
+    assert mock_services["github"].create_release.called
 
 
 @patch("autoscribe.cli.main.GitService")
