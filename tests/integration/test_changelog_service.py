@@ -1,24 +1,40 @@
 from pathlib import Path
-
 import pytest
+from unittest.mock import patch
 
 from autoscribe.core.changelog import ChangelogService
 from autoscribe.core.git import GitService
 from autoscribe.models.changelog import Change, Version
 from autoscribe.models.config import AutoScribeConfig
 from autoscribe.services.openai import AIService
+from ..unit.test_openai_service import MockOpenAI
+
+
+@pytest.fixture
+def sample_config(temp_dir):
+    """Create a test configuration."""
+    return AutoScribeConfig(
+        output=temp_dir / "CHANGELOG.md",
+        version_file=temp_dir / "pyproject.toml",
+        github_release=True,
+        github_token="test-token",
+        ai_enabled=True,
+        ai_model="gpt-4o-mini",
+        openai_api_key="test-key",
+    )
 
 
 def test_changelog_service_initialization(sample_config, git_repo):
     """Test ChangelogService initialization."""
     git_service = GitService(str(git_repo))
-    ai_service = AIService(sample_config)
-    service = ChangelogService(sample_config, git_service, ai_service)
+    with patch("openai.OpenAI", MockOpenAI):
+        ai_service = AIService(sample_config)
+        service = ChangelogService(sample_config, git_service, ai_service)
 
-    assert service.config == sample_config
-    assert service.git_service == git_service
-    assert service.ai_service == ai_service
-    assert service.changelog is not None
+        assert service.config == sample_config
+        assert service.git_service == git_service
+        assert service.ai_service == ai_service
+        assert service.changelog is not None
 
 
 def test_load_or_create_changelog(sample_config, temp_dir):
@@ -101,18 +117,19 @@ def test_generate_version(git_repo, sample_commits):
     assert any(c.name == "Changed" for c in version.categories)
 
 
-def test_generate_version_with_ai(git_repo, sample_commits, mock_openai_response):
+def test_generate_version_with_ai(git_repo, sample_commits):
     """Test version generation with AI enhancement."""
     config = AutoScribeConfig(ai_enabled=True, openai_api_key="test-key")
     git_service = GitService(str(git_repo))
-    ai_service = AIService(config)
-    service = ChangelogService(config, git_service, ai_service)
+    with patch("openai.OpenAI", MockOpenAI):
+        ai_service = AIService(config)
+        service = ChangelogService(config, git_service, ai_service)
 
-    version = service.generate_version("1.0.0")
-    assert isinstance(version, Version)
-    assert version.number == "1.0.0"
-    assert version.summary is not None
-    assert any(change.ai_enhanced for category in version.categories for change in category.changes)
+        version = service.generate_version("1.0.0")
+        assert isinstance(version, Version)
+        assert version.number == "1.0.0"
+        assert version.summary == "Enhanced description"
+        assert any(change.ai_enhanced for category in version.categories for change in category.changes)
 
 
 def test_add_version(temp_dir):

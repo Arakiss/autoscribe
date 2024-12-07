@@ -1,43 +1,74 @@
 from datetime import datetime
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
+from unittest.mock import patch
 import pytest
-from openai import AsyncOpenAI
+from openai import OpenAIError
 
-from autoscribe.models.changelog import Category, Change, Version
+from autoscribe.models.changelog import Change, Category, Version
 from autoscribe.models.config import AutoScribeConfig
 from autoscribe.services.openai import AIService
 
 
-@pytest.fixture
-def config():
-    """Create a test configuration."""
-    return AutoScribeConfig(
-        openai_api_key="test-key",
-        ai_model="gpt-4o-mini",
-        ai_enabled=True,
-    )
+class MockMessage:
+    @property
+    def content(self):
+        return "Enhanced description"
+
+    @property
+    def role(self):
+        return "assistant"
+
+
+class MockChoice:
+    def __init__(self):
+        self.message = MockMessage()
+        self.finish_reason = "stop"
+        self.index = 0
+
+
+class MockCompletion:
+    def __init__(self):
+        self.id = "test"
+        self.choices = [MockChoice()]
+        self.model = "gpt-4"
+
+
+class MockChat:
+    def completions(self):
+        return self
+
+    def create(self, *args, **kwargs):
+        return MockCompletion()
+
+
+class MockModels:
+    def list(self):
+        return [{"id": "gpt-4"}]
+
+
+class MockOpenAI:
+    def __init__(self, api_key=None):
+        if not api_key:
+            raise OpenAIError("API key is required")
+        self.api_key = api_key
+        self.chat = MockChat()
+        self.models = MockModels()
 
 
 @pytest.fixture
-def ai_service(config):
-    """Create an AI service instance."""
-    return AIService(config)
+def ai_service():
+    """Create an AI service instance with mocked client."""
+    config = AutoScribeConfig(ai_enabled=True, openai_api_key="test-key")
+    with patch("openai.OpenAI", MockOpenAI):
+        service = AIService(config)
+        return service
 
 
-@pytest.mark.asyncio
-async def test_is_available(ai_service):
+def test_is_available(ai_service):
     """Test AI service availability check."""
     assert ai_service.is_available()
 
-    # Test without API key
-    service = AIService(AutoScribeConfig(openai_api_key=None))
-    assert not service.is_available()
 
-
-@pytest.mark.asyncio
-async def test_enhance_changes(ai_service):
+def test_enhance_changes(ai_service):
     """Test enhancing changes with AI."""
     changes = [
         Change(
@@ -58,15 +89,11 @@ async def test_enhance_changes(ai_service):
 
     enhanced = ai_service.enhance_changes(changes)
     assert len(enhanced) == 2
-    # La mejora puede fallar si las credenciales son inválidas
-    if enhanced[0].ai_enhanced:
-        assert enhanced[0].description != changes[0].description
-    if enhanced[1].ai_enhanced:
-        assert enhanced[1].description != changes[1].description
+    assert all(change.ai_enhanced for change in enhanced)
+    assert all(change.description == "Enhanced description" for change in enhanced)
 
 
-@pytest.mark.asyncio
-async def test_generate_version_summary(ai_service):
+def test_generate_version_summary(ai_service):
     """Test generating version summary with AI."""
     version = Version(
         number="1.0.0",
@@ -100,26 +127,27 @@ async def test_generate_version_summary(ai_service):
     )
 
     summarized = ai_service.generate_version_summary(version)
-    assert summarized.summary is not None
-    assert len(summarized.summary) > 0
+    assert summarized.summary == "Enhanced description"
 
 
-@pytest.mark.asyncio
-async def test_error_handling(ai_service):
+def test_error_handling():
     """Test error handling in AI service."""
-    # Test with invalid API key
-    service = AIService(AutoScribeConfig(openai_api_key="invalid-key"))
-    changes = [
-        Change(
-            description="test change",
-            commit_hash="abc123",
-            commit_message="test: change",
-            author="Test User",
-            type="test",
-        )
-    ]
+    # Test without API key
+    config = AutoScribeConfig(ai_enabled=True, openai_api_key=None)
+    service = AIService(config)
+    assert not service.is_available()
 
-    enhanced = service.enhance_changes(changes)
-    assert len(enhanced) == 1
-    assert enhanced[0].description == changes[0].description
-    assert enhanced[0].ai_enhanced is False
+    # Test with invalid API key
+    class MockErrorClient:
+        def __init__(self, api_key=None):
+            raise OpenAIError("Invalid API key")
+
+    with patch("openai.OpenAI", MockErrorClient):
+        config = AutoScribeConfig(ai_enabled=True, openai_api_key="invalid-key")
+        service = AIService(config)
+        assert not service.is_available()
+
+    # Test with disabled AI
+    config = AutoScribeConfig(ai_enabled=False, openai_api_key="test-key")
+    service = AIService(config)
+    assert not service.is_available()

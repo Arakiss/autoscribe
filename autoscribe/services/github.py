@@ -1,10 +1,10 @@
 import json
 from typing import Optional, Tuple, Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-
+from github import Github, GithubException, Auth
 from ..models.config import AutoScribeConfig
+from ..utils.logging import get_logger
 
+logger = get_logger(__name__)
 
 class GitHubService:
     """Service for interacting with GitHub API."""
@@ -12,50 +12,19 @@ class GitHubService:
     def __init__(self, config: AutoScribeConfig):
         """Initialize the GitHub service."""
         self.config = config
-        self.base_url = "https://api.github.com"
-
-    def _make_request(
-        self, endpoint: str, method: str = "GET", data: Optional[dict] = None
-    ) -> Tuple[bool, Any]:
-        """Make a request to the GitHub API."""
-        if not self.config.github_token:
-            raise ValueError("GitHub token is required but not provided")
-
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        headers = {
-            "Accept": "application/vnd.github.v3+json",
-            "Authorization": f"Bearer {self.config.github_token}",
-            "User-Agent": "AutoScribe",
-        }
-        
-        if method in ("POST", "PATCH", "PUT") and data:
-            headers["Content-Type"] = "application/json"
-
-        try:
-            request = Request(
-                url,
-                headers=headers,
-                method=method,
-                data=json.dumps(data).encode() if data else None,
-            )
-            with urlopen(request) as response:
-                if response.status == 204:
-                    return True, None
-                    
-                response_data = json.loads(response.read().decode('utf-8'))
-                if response.status in (200, 201):
-                    return True, response_data
-                return False, response_data.get("message", "Unknown error")
-        except HTTPError as e:
+        self._github = None
+        if config.github_token:
             try:
-                error_data = json.loads(e.read().decode('utf-8'))
-                return False, error_data.get("message", "Not Found")
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return False, str(e)
-        except URLError as e:
-            return False, f"Connection error: {str(e.reason)}"
-        except Exception as e:
-            return False, str(e)
+                self._github = Github(config.github_token)
+                # Test connection
+                self._github.get_user().login
+                logger.info("Successfully initialized GitHub client")
+            except GithubException as e:
+                logger.error(f"Failed to initialize GitHub client: {e}")
+                self._github = None
+            except Exception as e:
+                logger.error(f"Unexpected error initializing GitHub client: {e}")
+                self._github = None
 
     def create_release(
         self,
@@ -68,19 +37,27 @@ class GitHubService:
         prerelease: bool = False,
     ) -> Tuple[bool, str]:
         """Create a new release on GitHub."""
-        endpoint = f"repos/{owner}/{repo}/releases"
-        data = {
-            "tag_name": tag_name,
-            "name": name,
-            "body": body,
-            "draft": draft,
-            "prerelease": prerelease,
-        }
+        if not self._github:
+            return False, "GitHub token is required but not provided or invalid"
 
-        success, response = self._make_request(endpoint, "POST", data)
-        if success and isinstance(response, dict):
-            return True, response.get("html_url", "")
-        return False, str(response) if response else "Failed to create release"
+        try:
+            repository = self._github.get_repo(f"{owner}/{repo}")
+            release = repository.create_git_release(
+                tag=tag_name,
+                name=name,
+                message=body,
+                draft=draft,
+                prerelease=prerelease
+            )
+            logger.info(f"Created release {tag_name} for {owner}/{repo}")
+            return True, release.html_url
+        except GithubException as e:
+            error_msg = e.data.get("message", str(e))
+            logger.error(f"Failed to create release: {error_msg}")
+            return False, error_msg
+        except Exception as e:
+            logger.error(f"Unexpected error creating release: {e}")
+            return False, str(e)
 
     def update_release(
         self,
@@ -94,36 +71,80 @@ class GitHubService:
         prerelease: bool = False,
     ) -> Tuple[bool, str]:
         """Update an existing release on GitHub."""
-        endpoint = f"repos/{owner}/{repo}/releases/{release_id}"
-        data = {
-            "tag_name": tag_name,
-            "name": name,
-            "body": body,
-            "draft": draft,
-            "prerelease": prerelease,
-        }
+        if not self._github:
+            return False, "GitHub token is required but not provided or invalid"
 
-        success, response = self._make_request(endpoint, "PATCH", data)
-        if success and isinstance(response, dict):
-            return True, response.get("html_url", "")
-        return False, str(response) if response else "Failed to update release"
+        try:
+            repository = self._github.get_repo(f"{owner}/{repo}")
+            release = repository.get_release(release_id)
+            release.update_release(
+                name=name,
+                message=body,
+                draft=draft,
+                prerelease=prerelease
+            )
+            logger.info(f"Updated release {release_id} for {owner}/{repo}")
+            return True, release.html_url
+        except GithubException as e:
+            error_msg = e.data.get("message", str(e))
+            logger.error(f"Failed to update release: {error_msg}")
+            return False, error_msg
+        except Exception as e:
+            logger.error(f"Unexpected error updating release: {e}")
+            return False, str(e)
 
     def get_release_by_tag(
         self, owner: str, repo: str, tag: str
     ) -> Tuple[bool, Optional[dict]]:
         """Get a release by its tag name."""
-        endpoint = f"repos/{owner}/{repo}/releases/tags/{tag}"
-        success, response = self._make_request(endpoint)
-        if success and isinstance(response, dict):
-            return True, response
-        return False, None
+        if not self._github:
+            return False, None
+
+        try:
+            repository = self._github.get_repo(f"{owner}/{repo}")
+            release = repository.get_release(tag)
+            release_data = {
+                "id": release.id,
+                "tag_name": release.tag_name,
+                "html_url": release.html_url,
+                "body": release.body,
+                "draft": release.draft,
+                "prerelease": release.prerelease,
+            }
+            logger.debug(f"Retrieved release {tag} for {owner}/{repo}")
+            return True, release_data
+        except GithubException as e:
+            error_msg = e.data.get("message", str(e))
+            logger.error(f"Failed to get release: {error_msg}")
+            return False, None
+        except Exception as e:
+            logger.error(f"Unexpected error getting release: {e}")
+            return False, None
 
     def delete_release(self, owner: str, repo: str, release_id: int) -> bool:
         """Delete a release from GitHub."""
-        endpoint = f"repos/{owner}/{repo}/releases/{release_id}"
-        success, _ = self._make_request(endpoint, "DELETE")
-        return success
+        if not self._github:
+            return False
+
+        try:
+            repository = self._github.get_repo(f"{owner}/{repo}")
+            release = repository.get_release(release_id)
+            release.delete_release()
+            logger.info(f"Deleted release {release_id} from {owner}/{repo}")
+            return True
+        except GithubException as e:
+            logger.error(f"Failed to delete release: {e.data.get('message', str(e))}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error deleting release: {e}")
+            return False
 
     def is_available(self) -> bool:
         """Check if GitHub service is available and configured."""
-        return bool(self.config.github_release and self.config.github_token)
+        if not self._github or not self.config.github_release or not self.config.github_token:
+            return False
+        try:
+            self._github.get_user().login
+            return True
+        except:
+            return False
