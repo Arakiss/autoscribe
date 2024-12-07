@@ -1,0 +1,26 @@
+```jinja2
+# {{ changelog.title }}
+
+{% if changelog.description %}
+{{ changelog.description }}
+{% endif %}
+
+{% for version in changelog.versions %}
+## [{{ version.number }}] - {{ version.date.strftime('%Y-%m-%d') }}
+
+{% if version.summary %}
+{{ version.summary }}
+
+{% endif %}
+{% for category in version.categories %}
+### {{ category.name }}
+
+{% for change in category.changes %}
+- {{ change.description }}{% if change.scope %} _({{ change.scope }})_{% endif %}{% if change.breaking %} **[BREAKING]**{% endif %}
+{% endfor %}
+
+{% endfor %}
+{% endfor %}
+
+---
+_Last updated: {{ changelog.last_updated.strftime('%Y-%m-%d %H:%M:%S') }}_
