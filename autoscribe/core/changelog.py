@@ -11,6 +11,37 @@ from .git import GitService
 class ChangelogService:
     """Service for managing changelog generation and updates."""
 
+    TYPE_TO_CATEGORY = {
+        # Added: for new features
+        "feat": "Added",
+        "feature": "Added",
+        # Changed: for changes in existing functionality
+        "change": "Changed",
+        "refactor": "Changed",
+        "perf": "Changed",
+        "style": "Changed",
+        # Deprecated: for soon-to-be removed features
+        "deprecate": "Deprecated",
+        # Removed: for now removed features
+        "remove": "Removed",
+        # Fixed: for any bug fixes
+        "fix": "Fixed",
+        "bugfix": "Fixed",
+        # Security: in case of vulnerabilities
+        "security": "Security",
+        # Documentation changes
+        "docs": "Documentation",
+        # Testing changes
+        "test": "Testing",
+        # Build system changes
+        "build": "Build",
+        # CI changes
+        "ci": "CI",
+        # Other changes
+        "chore": "Changed",
+        "revert": "Changed",
+    }
+
     def __init__(
         self,
         config: AutoScribeConfig,
@@ -35,33 +66,17 @@ class ChangelogService:
         """Categorize changes based on their type following Keep a Changelog."""
         categories: Dict[str, List[Change]] = {cat: [] for cat in self.config.categories}
 
-        type_to_category = {
-            # Added: for new features
-            "feat": "Added",
-            "feature": "Added",
-            # Changed: for changes in existing functionality
-            "change": "Changed",
-            "refactor": "Changed",
-            "perf": "Changed",
-            # Deprecated: for soon-to-be removed features
-            "deprecate": "Deprecated",
-            # Removed: for now removed features
-            "remove": "Removed",
-            # Fixed: for any bug fixes
-            "fix": "Fixed",
-            "bugfix": "Fixed",
-            # Security: in case of vulnerabilities
-            "security": "Security",
-        }
-
         for change in changes:
             if change.breaking:
                 # Breaking changes go into Changed category with a BREAKING CHANGE prefix
                 categories["Changed"].append(change)
                 continue
             
-            category = type_to_category.get(change.type, "Changed")
-            categories[category].append(change)
+            # Get category from type mapping, fallback to Changed if not found
+            category = self.TYPE_TO_CATEGORY.get(change.type, "Changed")
+            # Only add to category if it's configured
+            if category in categories:
+                categories[category].append(change)
 
         return {k: v for k, v in categories.items() if v}
 
@@ -132,6 +147,9 @@ class ChangelogService:
         if version.summary:
             output += f"{version.summary}\n\n"
 
+        if version.breaking_changes:
+            output += "### ⚠️ BREAKING CHANGES\n\n"
+
         for category in version.categories:
             if not category.changes:
                 continue
@@ -139,7 +157,8 @@ class ChangelogService:
             output += f"### {category.name}\n\n"
             for change in category.changes:
                 prefix = "BREAKING CHANGE: " if change.breaking else ""
-                output += f"- {prefix}{change.description}\n"
+                scope = f"**{change.scope}**: " if change.scope else ""
+                output += f"- {prefix}{scope}{change.description}\n"
             output += "\n"
 
         return output

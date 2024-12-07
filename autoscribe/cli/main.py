@@ -1,10 +1,12 @@
 """Command-line interface for AutoScribe."""
 
 import os
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import click
+import toml
 from dotenv import load_dotenv
 
 from ..core.changelog import ChangelogService
@@ -26,11 +28,52 @@ def load_config(config_path: Optional[str] = None) -> AutoScribeConfig:
     """Load configuration from file or defaults."""
     try:
         if config_path:
-            # TODO: Implement config loading from file
-            return AutoScribeConfig()
+            with open(config_path) as f:
+                config_data = toml.load(f)
+                if "tool" not in config_data or "autoscribe" not in config_data["tool"]:
+                    raise click.ClickException("Invalid configuration file format")
+                return AutoScribeConfig(**config_data["tool"]["autoscribe"])
+        
+        # Try to load from default location
+        default_config = Path(".autoscribe.toml")
+        if default_config.exists():
+            with open(default_config) as f:
+                config_data = toml.load(f)
+                if "tool" in config_data and "autoscribe" in config_data["tool"]:
+                    return AutoScribeConfig(**config_data["tool"]["autoscribe"])
+        
         return AutoScribeConfig()
     except Exception as e:
         raise click.ClickException(f"Configuration error: {e}")
+
+
+def initialize_services(
+    config: AutoScribeConfig,
+) -> Tuple[GitService, Optional[AIService], Optional[GitHubService]]:
+    """Initialize required services."""
+    try:
+        # Initialize Git service
+        git_service = GitService()
+        if not git_service:
+            raise click.ClickException("Failed to initialize Git service")
+
+        # Initialize AI service if enabled
+        ai_service = None
+        if config.ai_enabled:
+            ai_service = AIService(config)
+            if not ai_service.is_available():
+                logger.warning("AI service is enabled but not available")
+
+        # Initialize GitHub service if enabled
+        github_service = None
+        if config.github_release:
+            github_service = GitHubService(config)
+            if not github_service.is_available():
+                logger.warning("GitHub release is enabled but service not available")
+
+        return git_service, ai_service, github_service
+    except Exception as e:
+        raise click.ClickException(f"Service initialization failed: {e}")
 
 
 @click.group()
@@ -152,28 +195,41 @@ def generate(
             config_obj.github_release = github_release
 
         # Initialize services
-        git_service = GitService()
-        ai_service = AIService(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            model=config_obj.ai_model,
-        ) if config_obj.ai_enabled else None
+        git_service, ai_service, github_service = initialize_services(config_obj)
+
+        # Initialize changelog service
         changelog_service = ChangelogService(config_obj, git_service, ai_service)
+
+        # Get version number if not provided
+        if not version:
+            latest_tag = git_service.get_latest_tag()
+            if not latest_tag:
+                raise click.ClickException("No version specified and no tags found")
+            # TODO: Implement version bump suggestion based on changes
+            version = "1.0.0" if not latest_tag else latest_tag.lstrip("v")
 
         # Generate version
         new_version = changelog_service.generate_version(version)
         changelog_service.add_version(new_version)
 
         # Create GitHub release if enabled
-        if config_obj.github_release:
+        if config_obj.github_release and github_service and github_service.is_available():
             owner, repo = git_service.extract_repo_info()
-            if owner and repo:
-                github_service = GitHubService(
-                    token=os.getenv("GITHUB_TOKEN"),
+            if not owner or not repo:
+                logger.warning("Could not determine GitHub repository info")
+            else:
+                success, url = github_service.create_release(
                     owner=owner,
                     repo=repo,
+                    tag_name=f"v{new_version.number}",
+                    name=f"v{new_version.number}",
+                    body=changelog_service.render_version(new_version),
+                    draft=draft,
                 )
-                if github_service.is_available():
-                    github_service.create_release(new_version, draft=draft)
+                if success:
+                    click.echo(f"🚀 Created GitHub release: {url}")
+                else:
+                    logger.warning("Failed to create GitHub release")
 
         click.echo(f"✨ Generated changelog for version {new_version.number}")
 
@@ -185,9 +241,12 @@ def main():
     """Main entry point."""
     try:
         cli()
-    except Exception as e:
+    except click.ClickException as e:
         click.echo(f"Error: {e}", err=True)
-        exit(1)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Unexpected error: {e}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

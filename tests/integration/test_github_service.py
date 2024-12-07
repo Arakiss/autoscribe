@@ -1,10 +1,11 @@
-from github import Github, GithubException
-import pytest
+from datetime import datetime
 from unittest.mock import patch
 
+import pytest
+
+from autoscribe.models.changelog import Category, Change, Version
 from autoscribe.models.config import AutoScribeConfig
 from autoscribe.services.github import GitHubService
-from ..unit.test_github_service import MockGithub
 
 
 @pytest.fixture
@@ -16,12 +17,13 @@ def sample_config():
     )
 
 
-def test_github_service_initialization(sample_config):
+def test_github_service_initialization(sample_config, mock_github):
     """Test GitHubService initialization."""
-    with patch("github.Github", MockGithub):
+    with patch("github.Github", mock_github):
         service = GitHubService(sample_config)
         assert service.config == sample_config
         assert service._github is not None
+        assert service.is_available()
 
 
 def test_make_request_without_token():
@@ -31,9 +33,9 @@ def test_make_request_without_token():
     assert service._github is None
 
 
-def test_create_release(sample_config):
+def test_create_release(sample_config, mock_github):
     """Test creating a GitHub release."""
-    with patch("github.Github", MockGithub):
+    with patch("github.Github", mock_github):
         service = GitHubService(sample_config)
 
         success, url = service.create_release(
@@ -50,9 +52,9 @@ def test_create_release(sample_config):
         assert url == "https://github.com/test/repo/releases/v1.0.0"
 
 
-def test_update_release(sample_config):
+def test_update_release(sample_config, mock_github):
     """Test updating a GitHub release."""
-    with patch("github.Github", MockGithub):
+    with patch("github.Github", mock_github):
         service = GitHubService(sample_config)
 
         success, url = service.update_release(
@@ -67,12 +69,12 @@ def test_update_release(sample_config):
         )
 
         assert success is True
-        assert url == "https://github.com/test/repo/releases/1"
+        assert url == "https://github.com/test/repo/releases/v1.0.0"
 
 
-def test_get_release_by_tag(sample_config):
+def test_get_release_by_tag(sample_config, mock_github):
     """Test getting a release by tag."""
-    with patch("github.Github", MockGithub):
+    with patch("github.Github", mock_github):
         service = GitHubService(sample_config)
 
         success, release = service.get_release_by_tag(
@@ -84,20 +86,25 @@ def test_get_release_by_tag(sample_config):
         assert success is True
         assert release["id"] == 1
         assert release["tag_name"] == "v1.0.0"
+        assert release["name"] == "Release v1.0.0"
+        assert release["body"] == "Test release notes"
+        assert release["created_at"] == "2024-01-01T00:00:00Z"
+        assert release["published_at"] == "2024-01-01T00:00:00Z"
 
 
-def test_delete_release(sample_config):
+def test_delete_release(sample_config, mock_github):
     """Test deleting a release."""
-    with patch("github.Github", MockGithub):
+    with patch("github.Github", mock_github):
         service = GitHubService(sample_config)
 
-        success = service.delete_release(
+        success, error = service.delete_release(
             owner="test",
             repo="repo",
             release_id=1,
         )
 
         assert success is True
+        assert error is None
 
 
 def test_error_handling(sample_config):
@@ -114,20 +121,24 @@ def test_error_handling(sample_config):
         assert service._github is None
 
 
-def test_is_available(sample_config):
+def test_is_available(sample_config, mock_github):
     """Test service availability check."""
-    with patch("github.Github", MockGithub):
+    with patch("github.Github", mock_github):
         # Test with token and enabled
-        config = AutoScribeConfig(github_release=True, github_token="test-token")
-        service = GitHubService(config)
+        service = GitHubService(sample_config)
         assert service.is_available() is True
 
         # Test without token
-        config = AutoScribeConfig(github_release=True, github_token=None)
+        config = AutoScribeConfig(github_token=None)
         service = GitHubService(config)
         assert service.is_available() is False
 
-        # Test disabled
-        config = AutoScribeConfig(github_release=False, github_token="test-token")
+        # Test with invalid token
+        config = AutoScribeConfig(github_token="invalid-token")
+        service = GitHubService(config)
+        assert service.is_available() is False
+
+        # Test with disabled GitHub
+        config = AutoScribeConfig(github_release=False)
         service = GitHubService(config)
         assert service.is_available() is False

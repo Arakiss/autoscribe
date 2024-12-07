@@ -65,18 +65,28 @@ class AIService:
 
             if response.choices and response.choices[0].message.content:
                 enhanced_description = response.choices[0].message.content.strip()
-                change.description = enhanced_description
-                change.ai_enhanced = True
-                logger.debug(f"Successfully enhanced change description for {change.type}")
+                # Create a new Change object to avoid modifying the original
+                return Change(
+                    description=enhanced_description,
+                    commit_hash=change.commit_hash,
+                    commit_message=change.commit_message,
+                    author=change.author,
+                    type=change.type,
+                    scope=change.scope,
+                    breaking=change.breaking,
+                    ai_enhanced=True,
+                    references=change.references,
+                )
             else:
                 logger.warning("OpenAI returned empty response")
+                return change
 
         except OpenAIError as e:
             logger.error(f"OpenAI API error enhancing description: {e}")
+            return change
         except Exception as e:
             logger.error(f"Unexpected error enhancing description: {e}")
-
-        return change
+            return change
 
     def generate_version_summary(self, version: Version) -> Version:
         """Generate a summary for a version using AI."""
@@ -92,8 +102,15 @@ class AIService:
 
         if not changes_text:
             logger.debug("No changes to summarize")
-            version.summary = "No changes in this version."
-            return version
+            return Version(
+                number=version.number,
+                date=version.date,
+                categories=version.categories,
+                summary="No changes in this version.",
+                breaking_changes=version.breaking_changes,
+                yanked=version.yanked,
+                compare_url=version.compare_url,
+            )
 
         prompt = f"""
         Given these changes for version {version.number}:
@@ -123,20 +140,28 @@ class AIService:
             )
 
             if response.choices and response.choices[0].message.content:
-                version.summary = response.choices[0].message.content.strip()
-                logger.debug(f"Successfully generated summary for version {version.number}")
+                summary = response.choices[0].message.content.strip()
             else:
                 logger.warning("OpenAI returned empty response for version summary")
-                version.summary = "No significant changes in this version."
+                summary = "No significant changes in this version."
 
         except OpenAIError as e:
             logger.error(f"OpenAI API error generating summary: {e}")
-            version.summary = "No significant changes in this version."
+            summary = "No significant changes in this version."
         except Exception as e:
             logger.error(f"Unexpected error generating summary: {e}")
-            version.summary = "No significant changes in this version."
+            summary = "No significant changes in this version."
 
-        return version
+        # Create a new Version object to avoid modifying the original
+        return Version(
+            number=version.number,
+            date=version.date,
+            categories=version.categories,
+            summary=summary,
+            breaking_changes=version.breaking_changes,
+            yanked=version.yanked,
+            compare_url=version.compare_url,
+        )
 
     def enhance_changes(self, changes: List[Change]) -> List[Change]:
         """Enhance multiple changes in batch."""
@@ -147,7 +172,9 @@ class AIService:
 
     def is_available(self) -> bool:
         """Check if AI service is available and configured."""
-        if not self.client or not self.config.ai_enabled or not self.config.openai_api_key:
+        if not self.config.ai_enabled or not self.config.openai_api_key:
+            return False
+        if not self.client:
             return False
         try:
             self.client.models.list()

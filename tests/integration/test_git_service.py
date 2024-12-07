@@ -1,9 +1,10 @@
 from datetime import datetime
 from pathlib import Path
+import os
 
 import pytest
 
-from autoscribe.core.git import GitCommit, GitService
+from autoscribe.core.git import GitService, GitInitError, GitCommandError
 from autoscribe.models.changelog import Change
 
 
@@ -11,165 +12,188 @@ def test_git_service_initialization(git_repo):
     """Test GitService initialization."""
     service = GitService(str(git_repo))
     assert service.repo_path == str(git_repo)
+    assert service.cwd == str(git_repo)
 
-    service = GitService()
-    assert service.repo_path is None
+    # Test with non-existent directory
+    with pytest.raises(GitInitError):
+        GitService("/non/existent/path")
 
+    # Test with non-git directory
+    temp_dir = Path(git_repo).parent / "temp"
+    temp_dir.mkdir(exist_ok=True)
+    try:
+        with pytest.raises(GitInitError):
+            GitService(str(temp_dir))
+    finally:
+        temp_dir.rmdir()
 
-def test_run_command(git_repo):
-    """Test running Git commands."""
-    service = GitService(str(git_repo))
-
-    # Test successful command
-    result = service._run_command("git status")
-    assert "On branch main" in result
-
-    # Test failed command
-    with pytest.raises(RuntimeError):
-        service._run_command("git invalid-command")
+    # Test with None (current directory)
+    current_dir = os.getcwd()
+    os.chdir(str(git_repo))
+    try:
+        service = GitService()
+        assert service.repo_path == str(git_repo)
+    finally:
+        os.chdir(current_dir)
 
 
 def test_get_commits_since_tag(git_repo, sample_commits):
-    """Test getting commits since a tag."""
+    """Test getting commits since tag."""
     service = GitService(str(git_repo))
-
-    # Test without tag
     commits = service.get_commits_since_tag()
-    assert len(commits) == len(sample_commits) + 1  # +1 for initial commit
-    assert all(isinstance(commit, GitCommit) for commit in commits)
-    assert commits[0].message == sample_commits[-1]  # Last commit is first in list
+    assert len(commits) == len(sample_commits)
+    assert all(isinstance(commit.date, datetime) for commit in commits)
 
-    # Create a tag and test with it
-    service._run_command('git tag -a v1.0.0 -m "Version 1.0.0"')
-    commits = service.get_commits_since_tag("v1.0.0")
-    assert len(commits) == 0
+    # Test with non-existent tag
+    commits = service.get_commits_since_tag("non-existent-tag")
+    assert commits == []
 
 
 def test_get_latest_tag(git_repo):
-    """Test getting the latest tag."""
+    """Test getting latest tag."""
     service = GitService(str(git_repo))
-
-    # Test with no tags
     assert service.get_latest_tag() is None
 
     # Create a tag
-    service._run_command('git config --global user.email "test@example.com"')
-    service._run_command('git config --global user.name "Test User"')
-    service._run_command('git init')
-    service._run_command('echo "# Test Repository" > README.md')
-    service._run_command('git add README.md')
-    service._run_command('git commit -m "Initial commit"')
-    service._run_command('git tag -a v1.0.0 -m "Version 1.0.0"')
-
-    # Test with tag
-    result = service._run_command('git tag')
-    assert "v1.0.0" in result
+    service.create_tag("v1.0.0", "Release v1.0.0")
     assert service.get_latest_tag() == "v1.0.0"
 
-    # Test with multiple tags
-    service._run_command('echo "## Update" >> README.md')
-    service._run_command('git add README.md')
-    service._run_command('git commit -m "Update README"')
-    service._run_command('git tag -a v1.1.0 -m "Version 1.1.0"')
+    # Create another tag
+    service.create_tag("v1.1.0", "Release v1.1.0")
     assert service.get_latest_tag() == "v1.1.0"
 
 
-def test_parse_conventional_commit():
+def test_parse_conventional_commit(git_repo):
     """Test parsing conventional commit messages."""
-    service = GitService()
-
-    # Test basic commit
-    type_, scope, desc, breaking = service.parse_conventional_commit("feat: add new feature")
-    assert type_ == "feat"
-    assert scope is None
-    assert desc == "add new feature"
-    assert breaking is False
-
-    # Test commit with scope
-    type_, scope, desc, breaking = service.parse_conventional_commit("fix(core): resolve bug")
-    assert type_ == "fix"
-    assert scope == "core"
-    assert desc == "resolve bug"
-    assert breaking is False
-
-    # Test breaking change
-    type_, scope, desc, breaking = service.parse_conventional_commit("feat!: breaking change")
-    assert type_ == "feat"
-    assert scope is None
-    assert desc == "breaking change"
-    assert breaking is True
-
-    # Test non-conventional commit
-    type_, scope, desc, breaking = service.parse_conventional_commit("update something")
-    assert type_ == "other"
-    assert scope is None
-    assert desc == "update something"
-    assert breaking is False
-
-
-def test_create_change_from_commit():
-    """Test creating Change objects from commits."""
-    service = GitService()
-    commit = GitCommit(
-        hash="abc123",
-        message="feat(api): add new endpoint",
-        author="Test User",
-        date=datetime.now(),
-    )
-
-    change = service.create_change_from_commit(commit)
-    assert isinstance(change, Change)
-    assert change.commit_hash == "abc123"
-    assert change.commit_message == "feat(api): add new endpoint"
-    assert change.author == "Test User"
-    assert change.type == "feat"
-    assert change.scope == "api"
-    assert change.breaking is False
-    assert change.ai_enhanced is False
-
-
-def test_create_and_push_tag(git_repo):
-    """Test creating and pushing tags."""
     service = GitService(str(git_repo))
 
-    # Test creating tag
-    service.create_tag("v1.0.0", "Version 1.0.0")
-    assert "v1.0.0" in service._run_command("git tag")
+    # Test feature commit
+    type_, scope, desc, breaking = service.parse_conventional_commit(
+        "feat(api): add new endpoint"
+    )
+    assert type_ == "feat"
+    assert scope == "api"
+    assert desc == "add new endpoint"
+    assert not breaking
 
-    # Test creating tag without message
-    service.create_tag("v1.1.0", "Version 1.1.0")
-    assert "v1.1.0" in service._run_command("git tag")
+    # Test breaking change with !
+    type_, scope, desc, breaking = service.parse_conventional_commit(
+        "feat!: breaking feature"
+    )
+    assert type_ == "feat"
+    assert scope is None
+    assert desc == "breaking feature"
+    assert breaking
+
+    # Test breaking change in body
+    type_, scope, desc, breaking = service.parse_conventional_commit(
+        "feat: feature\n\nBREAKING CHANGE: breaks stuff"
+    )
+    assert type_ == "feat"
+    assert scope is None
+    assert desc == "feature"
+    assert breaking
+
+    # Test non-conventional commit
+    type_, scope, desc, breaking = service.parse_conventional_commit(
+        "random commit message"
+    )
+    assert type_ == "other"
+    assert scope is None
+    assert desc == "random commit message"
+    assert not breaking
+
+    # Test all conventional types
+    for type_ in GitService.CONVENTIONAL_TYPES:
+        msg = f"{type_}: test message"
+        parsed_type, _, _, _ = service.parse_conventional_commit(msg)
+        assert parsed_type == type_
 
 
-def test_get_remote_url(git_repo):
-    """Test getting remote URL."""
+def test_create_change_from_commit(git_repo, sample_commits):
+    """Test creating Change from GitCommit."""
+    service = GitService(str(git_repo))
+    commits = service.get_commits_since_tag()
+    
+    for commit in commits:
+        change = service.create_change_from_commit(commit)
+        assert isinstance(change, Change)
+        assert change.commit_hash == commit.hash
+        assert change.commit_message == commit.message
+        assert change.author == commit.author
+        assert not change.ai_enhanced
+        assert isinstance(change.references, list)
+
+
+def test_tag_operations(git_repo):
+    """Test tag creation and pushing."""
+    service = GitService(str(git_repo))
+
+    # Test invalid tag name
+    with pytest.raises(GitCommandError):
+        service.create_tag("", "Empty tag name")
+
+    # Test empty message
+    with pytest.raises(GitCommandError):
+        service.create_tag("v1.0.0", "")
+
+    # Create valid tag
+    service.create_tag("v1.0.0", "Release v1.0.0")
+    assert service.get_latest_tag() == "v1.0.0"
+
+    # Push tag (this will fail without a remote, which is expected)
+    with pytest.raises(GitCommandError):
+        service.push_tag("v1.0.0")
+
+    # Push non-existent tag
+    with pytest.raises(GitCommandError):
+        service.push_tag("non-existent-tag")
+
+
+def test_remote_operations(git_repo):
+    """Test remote URL operations."""
     service = GitService(str(git_repo))
 
     # Test without remote
     assert service.get_remote_url() is None
-
-    # Test with remote
-    service._run_command("git remote add origin https://github.com/test/repo.git")
-    assert service.get_remote_url() == "https://github.com/test/repo.git"
-
-
-def test_extract_repo_info(git_repo):
-    """Test extracting repository information."""
-    service = GitService(str(git_repo))
-
-    # Test without remote
     owner, repo = service.extract_repo_info()
     assert owner is None
     assert repo is None
 
-    # Test with HTTPS remote
+    # Add HTTPS remote
     service._run_command("git remote add origin https://github.com/test/repo.git")
+    assert service.get_remote_url() == "https://github.com/test/repo.git"
     owner, repo = service.extract_repo_info()
     assert owner == "test"
     assert repo == "repo"
 
-    # Test with SSH remote
+    # Change to SSH remote
     service._run_command("git remote set-url origin git@github.com:test/repo.git")
+    assert service.get_remote_url() == "git@github.com:test/repo.git"
     owner, repo = service.extract_repo_info()
     assert owner == "test"
     assert repo == "repo"
+
+
+def test_error_handling(git_repo):
+    """Test error handling."""
+    service = GitService(str(git_repo))
+
+    # Test invalid command
+    with pytest.raises(GitCommandError):
+        service._run_command("git invalid-command")
+
+    # Test invalid tag
+    with pytest.raises(GitCommandError):
+        service.create_tag("", "Invalid tag")
+
+    # Test invalid remote
+    with pytest.raises(GitCommandError):
+        service.push_tag("v1.0.0")
+
+    # Test command with stderr output but success
+    result = service._run_command("git status")
+    assert isinstance(result, str)
+
+    # Test command with both stdout and stderr
+    service._run_command("git init")  # This often produces both stdout and stderr

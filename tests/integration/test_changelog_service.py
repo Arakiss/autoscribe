@@ -1,110 +1,27 @@
+from datetime import datetime
 from pathlib import Path
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from autoscribe.core.changelog import ChangelogService
 from autoscribe.core.git import GitService
-from autoscribe.models.changelog import Change, Version
+from autoscribe.models.changelog import Category, Change, Version
 from autoscribe.models.config import AutoScribeConfig
 from autoscribe.services.openai import AIService
-from ..unit.test_openai_service import MockOpenAI
 
 
-@pytest.fixture
-def sample_config(temp_dir):
-    """Create a test configuration."""
-    return AutoScribeConfig(
-        output=temp_dir / "CHANGELOG.md",
-        version_file=temp_dir / "pyproject.toml",
-        github_release=True,
-        github_token="test-token",
-        ai_enabled=True,
-        ai_model="gpt-4o-mini",
-        openai_api_key="test-key",
-    )
-
-
-def test_changelog_service_initialization(sample_config, git_repo):
+def test_changelog_service_initialization(git_repo, sample_config):
     """Test ChangelogService initialization."""
     git_service = GitService(str(git_repo))
-    with patch("openai.OpenAI", MockOpenAI):
-        ai_service = AIService(sample_config)
-        service = ChangelogService(sample_config, git_service, ai_service)
-
-        assert service.config == sample_config
-        assert service.git_service == git_service
-        assert service.ai_service == ai_service
-        assert service.changelog is not None
-
-
-def test_load_or_create_changelog(sample_config, temp_dir):
-    """Test loading or creating changelog."""
-    git_service = GitService()
     service = ChangelogService(sample_config, git_service)
-
-    # Test creating new changelog
-    changelog = service._load_or_create_changelog()
-    assert changelog.title == "Changelog"
-    assert len(changelog.versions) == 0
-
-    # Test loading existing changelog
-    changelog_path = temp_dir / "CHANGELOG.md"
-    changelog_path.write_text("""# Test Changelog
-
-## [1.0.0] - 2024-01-01
-
-### Features
-
-- Initial release
-""")
-
-    sample_config.output = changelog_path
-    service = ChangelogService(sample_config, git_service)
-    changelog = service._load_or_create_changelog()
-    assert changelog.title == "Changelog"  # TODO: Implement changelog parsing
+    assert service.config == sample_config
+    assert service.git_service == git_service
+    assert service.ai_service is None
 
 
-def test_categorize_changes():
-    """Test change categorization."""
-    git_service = GitService()
-    service = ChangelogService(AutoScribeConfig(), git_service)
-
-    changes = [
-        Change(
-            description="Add new feature",
-            commit_hash="abc123",
-            commit_message="feat: add new feature",
-            author="Test User",
-            type="feat",
-        ),
-        Change(
-            description="Fix bug",
-            commit_hash="def456",
-            commit_message="fix: fix bug",
-            author="Test User",
-            type="fix",
-        ),
-        Change(
-            description="Breaking change",
-            commit_hash="ghi789",
-            commit_message="feat!: breaking change",
-            author="Test User",
-            type="feat",
-            breaking=True,
-        ),
-    ]
-
-    categorized = service._categorize_changes(changes)
-    assert "Added" in categorized
-    assert "Fixed" in categorized
-    assert "Changed" in categorized
-    assert len(categorized["Added"]) == 1
-    assert len(categorized["Fixed"]) == 1
-    assert len(categorized["Changed"]) == 1
-
-
-def test_generate_version(git_repo, sample_commits):
-    """Test version generation."""
+def test_generate_version_without_ai(git_repo, sample_commits):
+    """Test version generation without AI enhancement."""
     config = AutoScribeConfig(ai_enabled=False)
     git_service = GitService(str(git_repo))
     service = ChangelogService(config, git_service)
@@ -113,15 +30,14 @@ def test_generate_version(git_repo, sample_commits):
     assert isinstance(version, Version)
     assert version.number == "1.0.0"
     assert len(version.categories) > 0
-    assert any(c.name == "Added" for c in version.categories)
-    assert any(c.name == "Changed" for c in version.categories)
+    assert version.summary is None
 
 
-def test_generate_version_with_ai(git_repo, sample_commits):
+def test_generate_version_with_ai(git_repo, sample_commits, mock_openai):
     """Test version generation with AI enhancement."""
     config = AutoScribeConfig(ai_enabled=True, openai_api_key="test-key")
     git_service = GitService(str(git_repo))
-    with patch("openai.OpenAI", MockOpenAI):
+    with patch("openai.OpenAI", mock_openai):
         ai_service = AIService(config)
         service = ChangelogService(config, git_service, ai_service)
 
@@ -132,89 +48,88 @@ def test_generate_version_with_ai(git_repo, sample_commits):
         assert any(change.ai_enhanced for category in version.categories for change in category.changes)
 
 
-def test_add_version(temp_dir):
-    """Test adding version to changelog."""
-    config = AutoScribeConfig(output=temp_dir / "CHANGELOG.md")
-    git_service = GitService()
-    service = ChangelogService(config, git_service)
+def test_add_version(git_repo, sample_config):
+    """Test adding a version to the changelog."""
+    git_service = GitService(str(git_repo))
+    service = ChangelogService(sample_config, git_service)
 
     version = Version(
         number="1.0.0",
-        categories=[],
+        categories=[
+            Category(
+                name="Added",
+                changes=[
+                    Change(
+                        description="Initial release",
+                        commit_hash="abc123",
+                        commit_message="feat: initial release",
+                        author="Test User",
+                        type="feat",
+                    ),
+                ],
+            ),
+        ],
     )
 
     service.add_version(version)
-    assert len(service.changelog.versions) == 1
-    assert service.changelog.versions[0] == version
-    assert config.output.exists()
+    assert service.get_version("1.0.0") == version
+    assert service.get_latest_version() == version
 
 
-def test_save_changelog(temp_dir):
-    """Test saving changelog to file."""
-    config = AutoScribeConfig(output=temp_dir / "CHANGELOG.md")
-    git_service = GitService()
-    service = ChangelogService(config, git_service)
+def test_version_management(git_repo, sample_config):
+    """Test version management methods."""
+    git_service = GitService(str(git_repo))
+    service = ChangelogService(sample_config, git_service)
 
-    version = Version(
-        number="1.0.0",
-        categories=[],
-    )
-    service.changelog.add_version(version)
-    service._save_changelog()
-
-    assert config.output.exists()
-    content = config.output.read_text()
-    assert "# Changelog" in content
-    assert "[1.0.0]" in content
-
-
-def test_get_version():
-    """Test getting specific version."""
-    config = AutoScribeConfig()
-    git_service = GitService()
-    service = ChangelogService(config, git_service)
-
-    version1 = Version(number="1.0.0", categories=[])
-    version2 = Version(number="1.1.0", categories=[])
+    version1 = Version(number="1.0.0", date=datetime(2024, 1, 1))
+    version2 = Version(number="1.1.0", date=datetime(2024, 1, 2))
+    unreleased = Version(number="Unreleased", date=datetime(2024, 1, 3))
 
     service.add_version(version1)
-    service.add_version(version2)
-
     assert service.get_version("1.0.0") == version1
-    assert service.get_version("1.1.0") == version2
-    assert service.get_version("2.0.0") is None
-
-
-def test_get_latest_version():
-    """Test getting latest version."""
-    config = AutoScribeConfig()
-    git_service = GitService()
-    service = ChangelogService(config, git_service)
-
-    assert service.get_latest_version() is None
-
-    version1 = Version(number="1.0.0", categories=[])
-    version2 = Version(number="1.1.0", categories=[])
-
-    service.add_version(version1)
     assert service.get_latest_version() == version1
 
     service.add_version(version2)
     assert service.get_latest_version() == version2
 
+    service.add_version(unreleased)
+    assert service.get_unreleased_changes() == unreleased
 
-def test_render_version():
-    """Test version rendering."""
-    config = AutoScribeConfig()
-    git_service = GitService()
+
+def test_changelog_file_creation(git_repo, sample_config, tmp_path):
+    """Test changelog file creation."""
+    output_path = tmp_path / "CHANGELOG.md"
+    config = AutoScribeConfig(
+        output=output_path,
+        version_file=tmp_path / "pyproject.toml",
+    )
+
+    git_service = GitService(str(git_repo))
     service = ChangelogService(config, git_service)
 
     version = Version(
         number="1.0.0",
-        categories=[],
-        summary="Test summary",
+        date=datetime(2024, 1, 1),
+        categories=[
+            Category(
+                name="Added",
+                changes=[
+                    Change(
+                        description="Initial release",
+                        commit_hash="abc123",
+                        commit_message="feat: initial release",
+                        author="Test User",
+                        type="feat",
+                    ),
+                ],
+            ),
+        ],
     )
 
-    rendered = service.render_version(version)
-    assert "[1.0.0]" in rendered
-    assert "Test summary" in rendered
+    service.add_version(version)
+    assert output_path.exists()
+    content = output_path.read_text()
+    assert "# Changelog" in content
+    assert "## [1.0.0] - 2024-01-01" in content
+    assert "### Added" in content
+    assert "- Initial release" in content

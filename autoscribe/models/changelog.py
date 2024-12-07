@@ -21,9 +21,19 @@ class Change(BaseModel):
 class Category(BaseModel):
     """Represents a category of changes following Keep a Changelog."""
 
-    name: Literal["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"] = Field(
-        ..., description="Keep a Changelog standard category"
-    )
+    name: Literal[
+        "Added",
+        "Changed",
+        "Deprecated",
+        "Removed",
+        "Fixed",
+        "Security",
+        "Documentation",
+        "Performance",
+        "Testing",
+        "Build",
+        "CI",
+    ] = Field(..., description="Keep a Changelog standard category")
     changes: List[Change] = Field(default_factory=list, description="Changes in this category")
 
 
@@ -55,8 +65,8 @@ class Changelog(BaseModel):
     last_updated: datetime = Field(default_factory=datetime.now, description="Last update timestamp")
 
     def add_version(self, version: Version) -> None:
-        """Add a new version to the changelog."""
-        self.versions.insert(0, version)
+        """Add a new version to the changelog, maintaining reverse chronological order."""
+        self.versions.insert(0, version)  # Always insert at the beginning for latest first
         self.last_updated = datetime.now()
 
     def get_version(self, version_number: str) -> Optional[Version]:
@@ -67,8 +77,11 @@ class Changelog(BaseModel):
         return None
 
     def get_latest_version(self) -> Optional[Version]:
-        """Get the latest version."""
-        return self.versions[0] if self.versions else None
+        """Get the latest version (excluding unreleased)."""
+        for version in self.versions:
+            if version.number != "Unreleased":
+                return version
+        return None
 
     def get_unreleased_changes(self) -> Optional[Version]:
         """Get unreleased changes if they exist."""

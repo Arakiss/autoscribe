@@ -1,11 +1,126 @@
 import os
 from pathlib import Path
 from typing import Generator
+from unittest.mock import MagicMock
 
 import pytest
 from _pytest.fixtures import FixtureRequest
+from github import GithubException
+from openai import OpenAIError
 
 from autoscribe.models.config import AutoScribeConfig
+
+
+class MockGithubRelease:
+    @property
+    def id(self) -> int:
+        return 1
+
+    @property
+    def html_url(self) -> str:
+        return "https://github.com/test/repo/releases/v1.0.0"
+
+    @property
+    def tag_name(self) -> str:
+        return "v1.0.0"
+
+    @property
+    def title(self) -> str:
+        return "Release v1.0.0"
+
+    @property
+    def body(self) -> str:
+        return "Test release notes"
+
+    @property
+    def draft(self) -> bool:
+        return False
+
+    @property
+    def prerelease(self) -> bool:
+        return False
+
+    @property
+    def created_at(self) -> str:
+        return "2024-01-01T00:00:00Z"
+
+    @property
+    def published_at(self) -> str:
+        return "2024-01-01T00:00:00Z"
+
+    def update_release(self, **kwargs) -> None:
+        pass
+
+    def delete_release(self) -> None:
+        pass
+
+
+class MockGithubRepo:
+    def create_git_release(self, **kwargs) -> MockGithubRelease:
+        return MockGithubRelease()
+
+    def get_release(self, id_or_tag) -> MockGithubRelease:
+        return MockGithubRelease()
+
+
+class MockGithubUser:
+    @property
+    def login(self) -> str:
+        return "test-user"
+
+
+class MockGithub:
+    def __init__(self, token: str = None):
+        self.token = token
+
+    def get_user(self) -> MockGithubUser:
+        if not self.token or self.token == "invalid-token":
+            raise GithubException(401, {"message": "Bad credentials"})
+        return MockGithubUser()
+
+    def get_repo(self, full_name: str) -> MockGithubRepo:
+        if not self.token or self.token == "invalid-token":
+            raise GithubException(401, {"message": "Bad credentials"})
+        return MockGithubRepo()
+
+
+class MockOpenAIMessage:
+    def __init__(self, content: str):
+        self.content = content
+        self.role = "assistant"
+
+
+class MockOpenAIChoice:
+    def __init__(self, content: str):
+        self.message = MockOpenAIMessage(content)
+        self.finish_reason = "stop"
+        self.index = 0
+
+
+class MockOpenAIResponse:
+    def __init__(self, content: str):
+        self.id = "test-id"
+        self.choices = [MockOpenAIChoice(content)]
+        self.model = "gpt-4"
+
+
+class MockOpenAIChat:
+    def create(self, *args, **kwargs) -> MockOpenAIResponse:
+        return MockOpenAIResponse("Enhanced description")
+
+
+class MockOpenAIModels:
+    def list(self):
+        return [{"id": "gpt-4"}]
+
+
+class MockOpenAI:
+    def __init__(self, api_key: str = None):
+        if not api_key or api_key == "invalid-key":
+            raise OpenAIError("Invalid API key")
+        self.api_key = api_key
+        self.chat = MockOpenAIChat()
+        self.models = MockOpenAIModels()
 
 
 @pytest.fixture
@@ -30,7 +145,7 @@ def sample_config(temp_dir: Path) -> AutoScribeConfig:
         github_release=True,
         github_token="test-token",
         ai_enabled=True,
-        ai_model="gpt-4o-mini",
+        ai_model="gpt-4",
         openai_api_key="test-key",
     )
 
@@ -87,69 +202,15 @@ def sample_commits(git_repo: Path) -> Generator[list[str], None, None]:
 
 
 @pytest.fixture
-def mock_openai_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def mock_openai():
     """Mock OpenAI API responses."""
-    class MockResponse:
-        def __init__(self, content: str):
-            self.content = content
-            self.choices = [type("Choice", (), {"message": type("Message", (), {"content": content})()})]
-
-    def mock_create(*args, **kwargs):
-        messages = kwargs.get("messages", [])
-        if not messages:
-            return MockResponse("Enhanced description")
-        
-        last_message = messages[-1].get("content", "")
-        if "Generate a concise, user-friendly summary" in last_message:
-            return MockResponse("This version introduces new features and includes breaking changes.")
-        elif "Rewrite it as a clear, user-friendly changelog entry" in last_message:
-            return MockResponse("Enhanced description")
-        return MockResponse("Enhanced description")
-
-    # Mock the OpenAI client
-    class MockOpenAI:
-        def __init__(self, *args, **kwargs):
-            self.chat = type("ChatCompletion", (), {"create": mock_create})()
-            self.api_key = kwargs.get("api_key", "test-key")
-
-        def __bool__(self):
-            return True
-
-        def is_authenticated(self):
-            return True
-
-    monkeypatch.setattr("openai.OpenAI", MockOpenAI)
+    return MockOpenAI
 
 
 @pytest.fixture
-def mock_github_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def mock_github():
     """Mock GitHub API responses."""
-    class MockResponse:
-        def __init__(self):
-            self.status = 201
-            self.data = {
-                "html_url": "https://github.com/test/repo/releases/v1.0.0",
-                "message": "Success",
-            }
-
-        def read(self):
-            import json
-            return json.dumps(self.data).encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-    def mock_urlopen(request, *args, **kwargs):
-        # Capture headers for testing
-        if hasattr(request, "headers"):
-            mock_urlopen.last_request = request
-        return MockResponse()
-
-    mock_urlopen.last_request = None
-    monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
+    return MockGithub
 
 
 @pytest.fixture

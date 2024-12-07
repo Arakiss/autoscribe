@@ -55,11 +55,10 @@ class MockOpenAI:
 
 
 @pytest.fixture
-def ai_service():
+def ai_service(sample_config, mock_openai):
     """Create an AI service instance with mocked client."""
-    config = AutoScribeConfig(ai_enabled=True, openai_api_key="test-key")
-    with patch("openai.OpenAI", MockOpenAI):
-        service = AIService(config)
+    with patch("openai.OpenAI", mock_openai):
+        service = AIService(sample_config)
         return service
 
 
@@ -130,24 +129,22 @@ def test_generate_version_summary(ai_service):
     assert summarized.summary == "Enhanced description"
 
 
-def test_error_handling():
-    """Test error handling in AI service."""
+def test_error_handling(sample_config, mock_openai):
+    """Test error handling."""
     # Test without API key
-    config = AutoScribeConfig(ai_enabled=True, openai_api_key=None)
-    service = AIService(config)
-    assert not service.is_available()
+    config = AutoScribeConfig(openai_api_key=None)
+    with patch("openai.OpenAI", mock_openai):
+        service = AIService(config)
+        assert not service.is_available()
 
     # Test with invalid API key
-    class MockErrorClient:
-        def __init__(self, api_key=None):
-            raise OpenAIError("Invalid API key")
-
-    with patch("openai.OpenAI", MockErrorClient):
-        config = AutoScribeConfig(ai_enabled=True, openai_api_key="invalid-key")
+    config = AutoScribeConfig(openai_api_key="invalid-key")
+    with patch("openai.OpenAI", mock_openai):
         service = AIService(config)
         assert not service.is_available()
 
     # Test with disabled AI
-    config = AutoScribeConfig(ai_enabled=False, openai_api_key="test-key")
-    service = AIService(config)
-    assert not service.is_available()
+    config = AutoScribeConfig(ai_enabled=False)
+    with patch("openai.OpenAI", mock_openai):
+        service = AIService(config)
+        assert not service.is_available()

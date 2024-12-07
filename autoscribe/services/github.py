@@ -1,5 +1,5 @@
 import json
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, Dict
 from github import Github, GithubException, Auth
 from ..models.config import AutoScribeConfig
 from ..utils.logging import get_logger
@@ -37,7 +37,7 @@ class GitHubService:
         prerelease: bool = False,
     ) -> Tuple[bool, str]:
         """Create a new release on GitHub."""
-        if not self._github:
+        if not self.is_available():
             return False, "GitHub token is required but not provided or invalid"
 
         try:
@@ -71,7 +71,7 @@ class GitHubService:
         prerelease: bool = False,
     ) -> Tuple[bool, str]:
         """Update an existing release on GitHub."""
-        if not self._github:
+        if not self.is_available():
             return False, "GitHub token is required but not provided or invalid"
 
         try:
@@ -95,9 +95,9 @@ class GitHubService:
 
     def get_release_by_tag(
         self, owner: str, repo: str, tag: str
-    ) -> Tuple[bool, Optional[dict]]:
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """Get a release by its tag name."""
-        if not self._github:
+        if not self.is_available():
             return False, None
 
         try:
@@ -106,10 +106,13 @@ class GitHubService:
             release_data = {
                 "id": release.id,
                 "tag_name": release.tag_name,
+                "name": release.title,
                 "html_url": release.html_url,
                 "body": release.body,
                 "draft": release.draft,
                 "prerelease": release.prerelease,
+                "created_at": release.created_at,
+                "published_at": release.published_at,
             }
             logger.debug(f"Retrieved release {tag} for {owner}/{repo}")
             return True, release_data
@@ -121,27 +124,32 @@ class GitHubService:
             logger.error(f"Unexpected error getting release: {e}")
             return False, None
 
-    def delete_release(self, owner: str, repo: str, release_id: int) -> bool:
+    def delete_release(
+        self, owner: str, repo: str, release_id: int
+    ) -> Tuple[bool, Optional[str]]:
         """Delete a release from GitHub."""
-        if not self._github:
-            return False
+        if not self.is_available():
+            return False, "GitHub token is required but not provided or invalid"
 
         try:
             repository = self._github.get_repo(f"{owner}/{repo}")
             release = repository.get_release(release_id)
             release.delete_release()
             logger.info(f"Deleted release {release_id} from {owner}/{repo}")
-            return True
+            return True, None
         except GithubException as e:
-            logger.error(f"Failed to delete release: {e.data.get('message', str(e))}")
-            return False
+            error_msg = e.data.get("message", str(e))
+            logger.error(f"Failed to delete release: {error_msg}")
+            return False, error_msg
         except Exception as e:
             logger.error(f"Unexpected error deleting release: {e}")
-            return False
+            return False, str(e)
 
     def is_available(self) -> bool:
         """Check if GitHub service is available and configured."""
-        if not self._github or not self.config.github_release or not self.config.github_token:
+        if not self.config.github_release or not self.config.github_token:
+            return False
+        if not self._github:
             return False
         try:
             self._github.get_user().login

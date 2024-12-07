@@ -11,6 +11,21 @@ import os
 from ..models.changelog import Change
 
 
+class GitError(Exception):
+    """Base exception for git operations."""
+    pass
+
+
+class GitInitError(GitError):
+    """Exception raised when git repository initialization fails."""
+    pass
+
+
+class GitCommandError(GitError):
+    """Exception raised when a git command fails."""
+    pass
+
+
 @dataclass
 class GitCommit:
     """Git commit information."""
@@ -24,13 +39,50 @@ class GitCommit:
 class GitService:
     """Service for interacting with Git repositories."""
 
-    def __init__(self, repo_path: Optional[str] = None):
-        """Initialize the git service."""
-        self.repo_path = repo_path
-        self.cwd = repo_path
+    CONVENTIONAL_TYPES = {
+        "feat": "Features",
+        "fix": "Bug Fixes",
+        "docs": "Documentation",
+        "style": "Style",
+        "refactor": "Code Refactoring",
+        "perf": "Performance",
+        "test": "Tests",
+        "build": "Build",
+        "ci": "CI",
+        "chore": "Chores",
+        "revert": "Reverts",
+    }
+
+    def __init__(self, repo_path: Optional[str | Path] = None):
+        """Initialize the git service.
+        
+        Args:
+            repo_path: Path to the git repository. If None, uses current directory.
+            
+        Raises:
+            GitInitError: If the path is not a valid git repository.
+        """
+        self.repo_path = str(repo_path) if repo_path else os.getcwd()
+        self.cwd = self.repo_path
+
+        # Validate git repository
+        try:
+            self._run_command("git rev-parse --git-dir")
+        except GitCommandError as e:
+            raise GitInitError(f"Not a git repository: {self.repo_path}") from e
 
     def _run_command(self, command: str) -> str:
-        """Run a git command and return its output."""
+        """Run a git command and return its output.
+        
+        Args:
+            command: Git command to execute.
+            
+        Returns:
+            Command output as string.
+            
+        Raises:
+            GitCommandError: If the command fails.
+        """
         try:
             result = subprocess.run(
                 command,
@@ -40,14 +92,28 @@ class GitService:
                 text=True,
                 check=True,
             )
+            if result.stderr and not result.stdout:
+                raise subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=command,
+                    output=result.stdout,
+                    stderr=result.stderr
+                )
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Git command failed: {e.stderr}")
+            raise GitCommandError(f"Git command failed: {e.stderr}")
         except Exception as e:
-            raise RuntimeError(f"Error running git command: {str(e)}")
+            raise GitCommandError(f"Error running git command: {str(e)}")
 
     def get_commits_since_tag(self, tag: Optional[str] = None) -> List[GitCommit]:
-        """Get all commits since the specified tag."""
+        """Get all commits since the specified tag.
+        
+        Args:
+            tag: Git tag to get commits since. If None, gets all commits.
+            
+        Returns:
+            List of commits.
+        """
         format_str = "%H|%s|%an|%aI"
         if tag:
             command = f'git log {tag}..HEAD --format="{format_str}"'
@@ -70,20 +136,35 @@ class GitService:
                     )
                 )
             return commits
-        except Exception:
+        except GitCommandError:
             return []
 
     def get_latest_tag(self) -> Optional[str]:
-        """Get the latest tag from the repository."""
+        """Get the latest tag from the repository.
+        
+        Returns:
+            Latest tag or None if no tags exist.
+        """
         try:
             return self._run_command("git describe --tags --abbrev=0")
-        except Exception:
+        except GitCommandError:
             return None
 
     def parse_conventional_commit(self, message: str) -> Tuple[str, Optional[str], str, bool]:
-        """Parse a conventional commit message."""
+        """Parse a conventional commit message.
+        
+        Args:
+            message: Commit message to parse.
+            
+        Returns:
+            Tuple of (type, scope, description, breaking).
+        """
         # Regular expression for conventional commits
-        pattern = r"^(?P<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?: (?P<description>[^\n]+)(?:\n\n(?P<body>.+))?$"
+        pattern = (
+            r"^(?P<type>" + 
+            "|".join(self.CONVENTIONAL_TYPES.keys()) + 
+            r")(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?: (?P<description>[^\n]+)(?:\n\n(?P<body>.+))?$"
+        )
         match = re.match(pattern, message, re.DOTALL)
 
         if not match:
@@ -102,7 +183,14 @@ class GitService:
         return type_, scope, description, breaking
 
     def create_change_from_commit(self, commit: GitCommit) -> Change:
-        """Create a Change object from a GitCommit."""
+        """Create a Change object from a GitCommit.
+        
+        Args:
+            commit: Git commit to convert.
+            
+        Returns:
+            Change object.
+        """
         type_, scope, description, breaking = self.parse_conventional_commit(commit.message)
         return Change(
             description=description,
@@ -112,25 +200,54 @@ class GitService:
             type=type_,
             scope=scope,
             breaking=breaking,
+            ai_enhanced=False,
+            references=[],  # Extract references from commit message if needed
         )
 
     def create_tag(self, tag: str, message: str) -> None:
-        """Create an annotated tag."""
+        """Create an annotated tag.
+        
+        Args:
+            tag: Tag name.
+            message: Tag message.
+            
+        Raises:
+            GitCommandError: If tag creation fails.
+        """
+        if not tag or not message:
+            raise GitCommandError("Tag name and message are required")
         self._run_command(f'git tag -a {tag} -m "{message}"')
 
     def push_tag(self, tag: str) -> None:
-        """Push a tag to the remote repository."""
+        """Push a tag to the remote repository.
+        
+        Args:
+            tag: Tag name to push.
+            
+        Raises:
+            GitCommandError: If tag push fails.
+        """
+        if not tag:
+            raise GitCommandError("Tag name is required")
         self._run_command(f"git push origin {tag}")
 
     def get_remote_url(self) -> Optional[str]:
-        """Get the remote repository URL."""
+        """Get the remote repository URL.
+        
+        Returns:
+            Remote URL or None if no remote exists.
+        """
         try:
             return self._run_command("git remote get-url origin")
-        except Exception:
+        except GitCommandError:
             return None
 
     def extract_repo_info(self) -> Tuple[Optional[str], Optional[str]]:
-        """Extract owner and repo name from remote URL."""
+        """Extract owner and repo name from remote URL.
+        
+        Returns:
+            Tuple of (owner, repo) or (None, None) if not found.
+        """
         url = self.get_remote_url()
         if not url:
             return None, None

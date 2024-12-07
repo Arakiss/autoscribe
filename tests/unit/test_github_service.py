@@ -1,6 +1,5 @@
 from datetime import datetime
-from unittest.mock import MagicMock, patch
-from github import Github, GithubException
+from unittest.mock import patch
 
 import pytest
 
@@ -9,74 +8,11 @@ from autoscribe.models.config import AutoScribeConfig
 from autoscribe.services.github import GitHubService
 
 
-class MockUser:
-    @property
-    def login(self):
-        return "test-user"
-
-
-class MockRelease:
-    @property
-    def html_url(self):
-        return "https://github.com/test/repo/releases/v1.0.0"
-
-    @property
-    def id(self):
-        return 1
-
-    @property
-    def tag_name(self):
-        return "v1.0.0"
-
-    @property
-    def body(self):
-        return "Test release"
-
-    @property
-    def draft(self):
-        return False
-
-    @property
-    def prerelease(self):
-        return False
-
-    def update_release(self, **kwargs):
-        pass
-
-    def delete_release(self):
-        pass
-
-
-class MockRepo:
-    def create_git_release(self, **kwargs):
-        return MockRelease()
-
-    def get_release(self, id_or_tag):
-        return MockRelease()
-
-
-class MockGithub:
-    def __init__(self, token=None):
-        self.token = token
-        self.user = MockUser()
-
-    def get_user(self):
-        if not self.token:
-            raise GithubException(401, {"message": "Bad credentials"})
-        return self.user
-
-    def get_repo(self, full_name):
-        if not self.token:
-            raise GithubException(401, {"message": "Bad credentials"})
-        return MockRepo()
-
-
 @pytest.fixture
-def github_service():
+def github_service(sample_config, mock_github):
     """Create a GitHub service instance with mocked client."""
-    config = AutoScribeConfig(github_release=True, github_token="test-token")
-    with patch("github.Github", MockGithub):
-        service = GitHubService(config)
+    with patch("github.Github", mock_github):
+        service = GitHubService(sample_config)
         return service
 
 
@@ -127,28 +63,40 @@ def test_get_release_by_tag(github_service):
     assert success is True
     assert release["id"] == 1
     assert release["tag_name"] == "v1.0.0"
+    assert release["name"] == "Release v1.0.0"
+    assert release["body"] == "Test release notes"
+    assert release["created_at"] == "2024-01-01T00:00:00Z"
+    assert release["published_at"] == "2024-01-01T00:00:00Z"
 
 
 def test_delete_release(github_service):
     """Test deleting a release."""
-    success = github_service.delete_release(
+    success, error = github_service.delete_release(
         owner="test",
         repo="test",
         release_id=1,
     )
 
     assert success is True
+    assert error is None
 
 
-def test_make_request_no_token():
-    """Test making a request without a token."""
-    service = GitHubService(AutoScribeConfig(github_token=None))
-    success, error = service.create_release(
-        owner="test",
-        repo="test",
-        tag_name="v1.0.0",
-        name="v1.0.0",
-        body="Test release",
-    )
-    assert success is False
-    assert error == "GitHub token is required but not provided or invalid" 
+def test_error_handling(sample_config, mock_github):
+    """Test error handling."""
+    # Test without token
+    config = AutoScribeConfig(github_token=None)
+    with patch("github.Github", mock_github):
+        service = GitHubService(config)
+        assert not service.is_available()
+
+    # Test with invalid token
+    config = AutoScribeConfig(github_token="invalid-token")
+    with patch("github.Github", mock_github):
+        service = GitHubService(config)
+        assert not service.is_available()
+
+    # Test with disabled GitHub
+    config = AutoScribeConfig(github_release=False)
+    with patch("github.Github", mock_github):
+        service = GitHubService(config)
+        assert not service.is_available() 

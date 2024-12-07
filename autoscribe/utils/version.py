@@ -46,7 +46,7 @@ class Version:
             (?:\+(?P<build>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?
             $
         """
-        match = re.match(pattern, version_string, re.VERBOSE)
+        match = re.match(pattern, version_string.strip(), re.VERBOSE)
         if not match:
             raise ValueError(f"Invalid version string: {version_string}")
 
@@ -67,9 +67,27 @@ class Version:
         else:  # PATCH
             return Version(self.major, self.minor, self.patch + 1)
 
+    def _compare_prerelease(self, other: Optional[str]) -> int:
+        """Compare prerelease strings."""
+        if self.prerelease is None and other is None:
+            return 0
+        if self.prerelease is None:
+            return 1  # No prerelease is greater than any prerelease
+        if other is None:
+            return -1
+        return -1 if self.prerelease < other else (1 if self.prerelease > other else 0)
+
     def __lt__(self, other: "Version") -> bool:
-        """Compare versions."""
-        return (self.major, self.minor, self.patch) < (other.major, other.minor, other.patch)
+        """Compare versions following SemVer 2.0.0 rules."""
+        if not isinstance(other, Version):
+            return NotImplemented
+        
+        # Compare major.minor.patch
+        if (self.major, self.minor, self.patch) != (other.major, other.minor, other.patch):
+            return (self.major, self.minor, self.patch) < (other.major, other.minor, other.patch)
+        
+        # Compare prereleases
+        return self._compare_prerelease(other.prerelease) < 0
 
 
 def extract_version(content: str, pattern: str) -> Optional[str]:
