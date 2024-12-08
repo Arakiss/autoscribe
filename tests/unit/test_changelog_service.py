@@ -1,12 +1,11 @@
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from autoscribe.core.changelog import ChangelogService
 from autoscribe.core.git import GitCommit, GitService
-from autoscribe.models.changelog import Change, Category, Version
+from autoscribe.models.changelog import Category, Change, Version
 from autoscribe.models.config import AutoScribeConfig
 from autoscribe.services.openai import AIService
 
@@ -135,7 +134,7 @@ def test_categorize_changes(changelog_service):
     ]
 
     categorized = changelog_service._categorize_changes(changes)
-    
+
     assert "Added" in categorized
     assert "Fixed" in categorized
     assert "Changed" in categorized
@@ -213,4 +212,4 @@ def test_version_management(changelog_service):
     assert changelog_service.get_latest_version() == version2
 
     changelog_service.add_version(unreleased)
-    assert changelog_service.get_unreleased_changes() == unreleased 
+    assert changelog_service.get_unreleased_changes() == unreleased

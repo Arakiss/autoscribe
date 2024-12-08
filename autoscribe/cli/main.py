@@ -3,156 +3,87 @@
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import cast
 
 import click
 import toml
-from dotenv import load_dotenv
+from click import Context
 
 from ..core.changelog import ChangelogService
 from ..core.git import GitService
 from ..models.config import AutoScribeConfig
 from ..services.github import GitHubService
 from ..services.openai import AIService
-from ..utils.logging import setup_logger
-from .. import __version__
+from ..utils.logging import get_logger
 
-# Load environment variables
-load_dotenv()
-
-# Set up logging
-logger = setup_logger()
+logger = get_logger(__name__)
 
 
-def load_config(config_path: Optional[str] = None) -> AutoScribeConfig:
-    """Load configuration from file or defaults."""
-    try:
-        if config_path:
-            with open(config_path) as f:
-                config_data = toml.load(f)
-                if "tool" not in config_data or "autoscribe" not in config_data["tool"]:
-                    raise click.ClickException("Invalid configuration file format")
-                return AutoScribeConfig(**config_data["tool"]["autoscribe"])
-        
-        # Try to load from default location
-        default_config = Path(".autoscribe.toml")
-        if default_config.exists():
-            with open(default_config) as f:
-                config_data = toml.load(f)
-                if "tool" in config_data and "autoscribe" in config_data["tool"]:
-                    return AutoScribeConfig(**config_data["tool"]["autoscribe"])
-        
-        return AutoScribeConfig()
-    except Exception as e:
-        raise click.ClickException(f"Configuration error: {e}")
+def load_config(config_path: Path | None = None) -> AutoScribeConfig:
+    """Load configuration from file or environment."""
+    if config_path and config_path.exists():
+        with open(config_path) as f:
+            config_data = toml.load(f)
+            return AutoScribeConfig(**config_data.get("tool", {}).get("autoscribe", {}))
+
+    return AutoScribeConfig(
+        github_token=os.getenv("GITHUB_TOKEN"),
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+    )
 
 
-def initialize_services(
+def setup_services(
     config: AutoScribeConfig,
-) -> Tuple[GitService, Optional[AIService], Optional[GitHubService]]:
-    """Initialize required services."""
-    try:
-        # Initialize Git service
-        git_service = GitService()
-        if not git_service:
-            raise click.ClickException("Failed to initialize Git service")
+) -> tuple[GitService, ChangelogService, AIService | None, GitHubService | None]:
+    """Set up required services."""
+    git_service = GitService()
+    ai_service = None
+    github_service = None
 
-        # Initialize AI service if enabled
-        ai_service = None
-        if config.ai_enabled:
+    if config.ai_enabled:
+        try:
             ai_service = AIService(config)
             if not ai_service.is_available():
                 logger.warning("AI service is enabled but not available")
+                ai_service = None
+        except Exception as e:
+            logger.error(f"Failed to initialize AI service: {e}")
+            ai_service = None
 
-        # Initialize GitHub service if enabled
-        github_service = None
-        if config.github_release:
+    if config.github_release:
+        try:
             github_service = GitHubService(config)
             if not github_service.is_available():
                 logger.warning("GitHub release is enabled but service not available")
+                github_service = None
+        except Exception as e:
+            logger.error(f"Failed to initialize GitHub service: {e}")
+            github_service = None
 
-        return git_service, ai_service, github_service
-    except Exception as e:
-        raise click.ClickException(f"Service initialization failed: {e}")
+    changelog_service = ChangelogService(config, git_service, ai_service)
+    return git_service, changelog_service, ai_service, github_service
 
 
 @click.group()
-@click.version_option(version=__version__, prog_name="autoscribe")
-def cli():
-    """AutoScribe - Intelligent changelog automation powered by AI."""
-    pass
-
-
-@cli.command()
+@click.version_option(prog_name="autoscribe")
 @click.option(
-    "--output",
-    "-o",
-    type=click.Path(),
-    help="Output file path",
-)
-@click.option(
-    "--config",
     "-c",
-    type=click.Path(exists=True),
-    help="Configuration file path",
+    "--config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to configuration file",
 )
-def init(output: Optional[str], config: Optional[str]):
-    """Initialize AutoScribe in the current directory."""
-    try:
-        # Load or create config
-        config_obj = load_config(config)
-        if output:
-            config_obj.output = Path(output)
-
-        # Create output directory if needed
-        output_dir = config_obj.output.parent
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Create empty changelog
-        with open(config_obj.output, "w") as f:
-            f.write("""# Changelog
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-""")
-
-        # Create config file if it doesn't exist
-        if not Path(".autoscribe.toml").exists():
-            with open(".autoscribe.toml", "w") as f:
-                f.write("""[tool.autoscribe]
-output = "CHANGELOG.md"
-version_file = "pyproject.toml"
-version_pattern = "version = '{version}'"
-categories = [
-    "Added",
-    "Changed",
-    "Deprecated",
-    "Removed",
-    "Fixed",
-    "Security"
-]
-github_release = true
-github_token = "env:GITHUB_TOKEN"
-ai_enabled = true
-ai_model = "gpt-4o-mini"
-openai_api_key = "env:OPENAI_API_KEY"
-""")
-
-        click.echo("✨ AutoScribe initialized successfully!")
-
-    except Exception as e:
-        raise click.ClickException(f"Initialization failed: {e}")
+@click.pass_context
+def cli(ctx: Context, config: Path | None = None):
+    """AutoScribe - Automated changelog generation and management."""
+    ctx.ensure_object(dict)
+    ctx.obj["config"] = load_config(config)
 
 
 @cli.command()
 @click.option(
-    "--version",
     "-v",
+    "--version",
+    type=str,
     help="Version number to generate",
 )
 @click.option(
@@ -163,91 +94,112 @@ openai_api_key = "env:OPENAI_API_KEY"
 @click.option(
     "--github-release/--no-github-release",
     default=None,
-    help="Create GitHub release",
+    help="Enable/disable GitHub release creation",
 )
-@click.option(
-    "--draft/--no-draft",
-    default=False,
-    help="Create draft release",
-)
-@click.option(
-    "--config",
-    "-c",
-    type=click.Path(exists=True),
-    help="Configuration file path",
-)
+@click.pass_context
 def generate(
-    version: Optional[str],
-    ai: Optional[bool],
-    github_release: Optional[bool],
-    draft: bool,
-    config: Optional[str],
+    ctx: Context,
+    version: str | None = None,
+    ai: bool | None = None,
+    github_release: bool | None = None,
 ):
-    """Generate changelog entries."""
+    """Generate a new changelog version."""
+    config = cast(AutoScribeConfig, ctx.obj["config"])
+
+    # Override config with CLI options
+    if ai is not None:
+        config.ai_enabled = ai
+    if github_release is not None:
+        config.github_release = github_release
+
     try:
-        # Load configuration
-        config_obj = load_config(config)
-
-        # Override config with CLI options
-        if ai is not None:
-            config_obj.ai_enabled = ai
-        if github_release is not None:
-            config_obj.github_release = github_release
-
-        # Initialize services
-        git_service, ai_service, github_service = initialize_services(config_obj)
-
-        # Initialize changelog service
-        changelog_service = ChangelogService(config_obj, git_service, ai_service)
-
-        # Get version number if not provided
-        if not version:
-            latest_tag = git_service.get_latest_tag()
-            if not latest_tag:
-                raise click.ClickException("No version specified and no tags found")
-            # TODO: Implement version bump suggestion based on changes
-            version = "1.0.0" if not latest_tag else latest_tag.lstrip("v")
+        git_service, changelog_service, ai_service, github_service = setup_services(config)
 
         # Generate version
+        if version is None:
+            logger.error("Version number is required")
+            sys.exit(1)
+
         new_version = changelog_service.generate_version(version)
+        if not new_version:
+            logger.error("Failed to generate version")
+            sys.exit(1)
+
+        # Add version to changelog
         changelog_service.add_version(new_version)
+        changelog_service._save_changelog()
 
         # Create GitHub release if enabled
-        if config_obj.github_release and github_service and github_service.is_available():
+        if github_service and github_service.is_available():
+            # Extract owner and repo from remote URL
             owner, repo = git_service.extract_repo_info()
             if not owner or not repo:
-                logger.warning("Could not determine GitHub repository info")
+                logger.error("Failed to extract repository information")
+                sys.exit(1)
+
+            success, url = github_service.create_release(
+                owner=owner,
+                repo=repo,
+                tag_name=f"v{new_version.number}",
+                name=f"Release {new_version.number}",
+                body=changelog_service.render_version(new_version),
+            )
+            if success:
+                logger.info(f"Created GitHub release: {url}")
             else:
-                success, url = github_service.create_release(
-                    owner=owner,
-                    repo=repo,
-                    tag_name=f"v{new_version.number}",
-                    name=f"v{new_version.number}",
-                    body=changelog_service.render_version(new_version),
-                    draft=draft,
-                )
-                if success:
-                    click.echo(f"🚀 Created GitHub release: {url}")
-                else:
-                    logger.warning("Failed to create GitHub release")
-
-        click.echo(f"✨ Generated changelog for version {new_version.number}")
+                logger.error(f"Failed to create GitHub release: {url}")
 
     except Exception as e:
-        raise click.ClickException(f"Generation failed: {e}")
-
-
-def main():
-    """Main entry point."""
-    try:
-        cli()
-    except click.ClickException as e:
-        click.echo(f"Error: {e}", err=True)
+        logger.error(f"Generation failed: {e}")
         sys.exit(1)
+
+
+@cli.command()
+@click.pass_context
+def init(ctx: Context):
+    """Initialize AutoScribe configuration."""
+    config = ctx.obj["config"]
+
+    try:
+        # Create changelog file if it doesn't exist
+        if not config.output.exists():
+            config.output.parent.mkdir(parents=True, exist_ok=True)
+            config.output.touch()
+            logger.info(f"Created changelog file at {config.output}")
+
+        # Create configuration file if it doesn't exist
+        config_file = Path("pyproject.toml")
+        if not config_file.exists():
+            config_file.write_text(
+                "[tool.autoscribe]\n"
+                'output = "CHANGELOG.md"\n'
+                'version_file = "pyproject.toml"\n'
+                'version_pattern = "version = \'{version}\'"\n'
+                "github_release = true\n"
+                "ai_enabled = true\n"
+                'ai_model = "gpt-4"\n'
+            )
+            logger.info("Initialized configuration in pyproject.toml")
+        else:
+            # Update existing configuration
+            config_data = toml.load(config_file)
+            config_data.setdefault("tool", {}).setdefault("autoscribe", {}).update(
+                {
+                    "output": str(config.output),
+                    "version_file": str(config.version_file),
+                    "version_pattern": config.version_pattern,
+                    "github_release": config.github_release,
+                    "ai_enabled": config.ai_enabled,
+                    "ai_model": config.ai_model,
+                }
+            )
+            config_file.write_text(toml.dumps(config_data))
+            logger.info("Updated configuration in pyproject.toml")
+
     except Exception as e:
-        click.echo(f"Unexpected error: {e}", err=True)
+        logger.error(f"Initialization failed: {e}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    cli()

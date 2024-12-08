@@ -1,10 +1,10 @@
+import os
 from datetime import datetime
 from pathlib import Path
-import os
 
 import pytest
 
-from autoscribe.core.git import GitService, GitInitError, GitCommandError
+from autoscribe.core.git import GitCommandError, GitInitError, GitService
 from autoscribe.models.changelog import Change
 
 
@@ -41,7 +41,8 @@ def test_get_commits_since_tag(git_repo, sample_commits):
     """Test getting commits since tag."""
     service = GitService(str(git_repo))
     commits = service.get_commits_since_tag()
-    assert len(commits) == len(sample_commits)
+    # Account for the initial commit plus sample commits
+    assert len(commits) == len(sample_commits) + 1
     assert all(isinstance(commit.date, datetime) for commit in commits)
 
     # Test with non-existent tag
@@ -114,7 +115,7 @@ def test_create_change_from_commit(git_repo, sample_commits):
     """Test creating Change from GitCommit."""
     service = GitService(str(git_repo))
     commits = service.get_commits_since_tag()
-    
+
     for commit in commits:
         change = service.create_change_from_commit(commit)
         assert isinstance(change, Change)

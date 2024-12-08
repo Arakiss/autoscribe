@@ -1,12 +1,11 @@
 """Git service for interacting with git repositories."""
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
-import os
 
 from ..models.changelog import Change
 
@@ -53,12 +52,12 @@ class GitService:
         "revert": "Reverts",
     }
 
-    def __init__(self, repo_path: Optional[str | Path] = None):
+    def __init__(self, repo_path: str | Path | None = None):
         """Initialize the git service.
-        
+
         Args:
             repo_path: Path to the git repository. If None, uses current directory.
-            
+
         Raises:
             GitInitError: If the path is not a valid git repository.
         """
@@ -73,13 +72,13 @@ class GitService:
 
     def _run_command(self, command: str) -> str:
         """Run a git command and return its output.
-        
+
         Args:
             command: Git command to execute.
-            
+
         Returns:
             Command output as string.
-            
+
         Raises:
             GitCommandError: If the command fails.
         """
@@ -101,16 +100,16 @@ class GitService:
                 )
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
-            raise GitCommandError(f"Git command failed: {e.stderr}")
+            raise GitCommandError(f"Git command failed: {e.stderr}") from e
         except Exception as e:
-            raise GitCommandError(f"Error running git command: {str(e)}")
+            raise GitCommandError(f"Error running git command: {str(e)}") from e
 
-    def get_commits_since_tag(self, tag: Optional[str] = None) -> List[GitCommit]:
+    def get_commits_since_tag(self, tag: str | None = None) -> list[GitCommit]:
         """Get all commits since the specified tag.
-        
+
         Args:
             tag: Git tag to get commits since. If None, gets all commits.
-            
+
         Returns:
             List of commits.
         """
@@ -139,31 +138,37 @@ class GitService:
         except GitCommandError:
             return []
 
-    def get_latest_tag(self) -> Optional[str]:
+    def get_latest_tag(self) -> str | None:
         """Get the latest tag from the repository.
-        
+
         Returns:
             Latest tag or None if no tags exist.
         """
         try:
-            return self._run_command("git describe --tags --abbrev=0")
-        except GitCommandError:
+            # Get all tags sorted by version number (v1.2.3 format)
+            tags = self._run_command("git tag -l 'v*'").split("\n")
+            if not tags or not tags[0]:
+                return None
+            # Sort tags by version components
+            return sorted(tags, key=lambda t: [int(n) for n in t[1:].split(".")], reverse=True)[0]
+        except (GitCommandError, ValueError):
             return None
 
-    def parse_conventional_commit(self, message: str) -> Tuple[str, Optional[str], str, bool]:
+    def parse_conventional_commit(self, message: str) -> tuple[str, str | None, str, bool]:
         """Parse a conventional commit message.
-        
+
         Args:
             message: Commit message to parse.
-            
+
         Returns:
             Tuple of (type, scope, description, breaking).
         """
         # Regular expression for conventional commits
         pattern = (
-            r"^(?P<type>" + 
-            "|".join(self.CONVENTIONAL_TYPES.keys()) + 
-            r")(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?: (?P<description>[^\n]+)(?:\n\n(?P<body>.+))?$"
+            r"^(?P<type>" +
+            "|".join(self.CONVENTIONAL_TYPES.keys()) +
+            r")(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?: (?P<description>[^\n]+)"
+            r"(?:\n\n(?P<body>.+))?$"
         )
         match = re.match(pattern, message, re.DOTALL)
 
@@ -184,10 +189,10 @@ class GitService:
 
     def create_change_from_commit(self, commit: GitCommit) -> Change:
         """Create a Change object from a GitCommit.
-        
+
         Args:
             commit: Git commit to convert.
-            
+
         Returns:
             Change object.
         """
@@ -206,11 +211,11 @@ class GitService:
 
     def create_tag(self, tag: str, message: str) -> None:
         """Create an annotated tag.
-        
+
         Args:
             tag: Tag name.
             message: Tag message.
-            
+
         Raises:
             GitCommandError: If tag creation fails.
         """
@@ -220,10 +225,10 @@ class GitService:
 
     def push_tag(self, tag: str) -> None:
         """Push a tag to the remote repository.
-        
+
         Args:
             tag: Tag name to push.
-            
+
         Raises:
             GitCommandError: If tag push fails.
         """
@@ -231,9 +236,9 @@ class GitService:
             raise GitCommandError("Tag name is required")
         self._run_command(f"git push origin {tag}")
 
-    def get_remote_url(self) -> Optional[str]:
+    def get_remote_url(self) -> str | None:
         """Get the remote repository URL.
-        
+
         Returns:
             Remote URL or None if no remote exists.
         """
@@ -242,9 +247,9 @@ class GitService:
         except GitCommandError:
             return None
 
-    def extract_repo_info(self) -> Tuple[Optional[str], Optional[str]]:
-        """Extract owner and repo name from remote URL.
-        
+    def extract_repo_info(self) -> tuple[str | None, str | None]:
+        """Extract owner and repository name from remote URL.
+
         Returns:
             Tuple of (owner, repo) or (None, None) if not found.
         """
@@ -252,14 +257,13 @@ class GitService:
         if not url:
             return None, None
 
-        # Match HTTPS URL format
-        https_match = re.match(r"https://github\.com/([^/]+)/([^.]+)\.git", url)
-        if https_match:
-            return https_match.group(1), https_match.group(2)
+        # Match GitHub HTTPS or SSH URL patterns
+        https_pattern = r"https://github\.com/([^/]+)/([^/.]+)(?:\.git)?"
+        ssh_pattern = r"git@github\.com:([^/]+)/([^/.]+)(?:\.git)?"
 
-        # Match SSH URL format
-        ssh_match = re.match(r"git@github\.com:([^/]+)/([^.]+)\.git", url)
-        if ssh_match:
-            return ssh_match.group(1), ssh_match.group(2)
+        for pattern in [https_pattern, ssh_pattern]:
+            match = re.match(pattern, url)
+            if match:
+                return match.group(1), match.group(2)
 
         return None, None

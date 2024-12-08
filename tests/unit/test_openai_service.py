@@ -1,57 +1,10 @@
 from datetime import datetime
 from unittest.mock import patch
+
 import pytest
-from openai import OpenAIError
 
-from autoscribe.models.changelog import Change, Category, Version
-from autoscribe.models.config import AutoScribeConfig
+from autoscribe.models.changelog import Category, Change, Version
 from autoscribe.services.openai import AIService
-
-
-class MockMessage:
-    @property
-    def content(self):
-        return "Enhanced description"
-
-    @property
-    def role(self):
-        return "assistant"
-
-
-class MockChoice:
-    def __init__(self):
-        self.message = MockMessage()
-        self.finish_reason = "stop"
-        self.index = 0
-
-
-class MockCompletion:
-    def __init__(self):
-        self.id = "test"
-        self.choices = [MockChoice()]
-        self.model = "gpt-4"
-
-
-class MockChat:
-    def completions(self):
-        return self
-
-    def create(self, *args, **kwargs):
-        return MockCompletion()
-
-
-class MockModels:
-    def list(self):
-        return [{"id": "gpt-4"}]
-
-
-class MockOpenAI:
-    def __init__(self, api_key=None):
-        if not api_key:
-            raise OpenAIError("API key is required")
-        self.api_key = api_key
-        self.chat = MockChat()
-        self.models = MockModels()
 
 
 @pytest.fixture
@@ -129,22 +82,16 @@ def test_generate_version_summary(ai_service):
     assert summarized.summary == "Enhanced description"
 
 
-def test_error_handling(sample_config, mock_openai):
+def test_error_handling(ai_service):
     """Test error handling."""
-    # Test without API key
-    config = AutoScribeConfig(openai_api_key=None)
-    with patch("openai.OpenAI", mock_openai):
-        service = AIService(config)
-        assert not service.is_available()
-
     # Test with invalid API key
-    config = AutoScribeConfig(openai_api_key="invalid-key")
-    with patch("openai.OpenAI", mock_openai):
-        service = AIService(config)
-        assert not service.is_available()
+    ai_service.config.openai_api_key = "invalid-key"
+    assert not ai_service.is_available()
 
     # Test with disabled AI
-    config = AutoScribeConfig(ai_enabled=False)
-    with patch("openai.OpenAI", mock_openai):
-        service = AIService(config)
-        assert not service.is_available()
+    ai_service.config.ai_enabled = False
+    assert not ai_service.is_available()
+
+    # Test with no API key
+    ai_service.config.openai_api_key = None
+    assert not ai_service.is_available()

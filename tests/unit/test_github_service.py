@@ -1,10 +1,7 @@
-from datetime import datetime
 from unittest.mock import patch
 
 import pytest
 
-from autoscribe.models.changelog import Category, Change, Version
-from autoscribe.models.config import AutoScribeConfig
 from autoscribe.services.github import GitHubService
 
 
@@ -62,9 +59,12 @@ def test_get_release_by_tag(github_service):
 
     assert success is True
     assert release["id"] == 1
+    assert release["html_url"] == "https://github.com/test/repo/releases/v1.0.0"
     assert release["tag_name"] == "v1.0.0"
     assert release["name"] == "Release v1.0.0"
     assert release["body"] == "Test release notes"
+    assert not release["draft"]
+    assert not release["prerelease"]
     assert release["created_at"] == "2024-01-01T00:00:00Z"
     assert release["published_at"] == "2024-01-01T00:00:00Z"
 
@@ -81,22 +81,16 @@ def test_delete_release(github_service):
     assert error is None
 
 
-def test_error_handling(sample_config, mock_github):
+def test_error_handling(github_service):
     """Test error handling."""
-    # Test without token
-    config = AutoScribeConfig(github_token=None)
-    with patch("github.Github", mock_github):
-        service = GitHubService(config)
-        assert not service.is_available()
-
     # Test with invalid token
-    config = AutoScribeConfig(github_token="invalid-token")
-    with patch("github.Github", mock_github):
-        service = GitHubService(config)
-        assert not service.is_available()
+    github_service.config.github_token = "invalid-token"
+    assert not github_service.is_available()
 
-    # Test with disabled GitHub
-    config = AutoScribeConfig(github_release=False)
-    with patch("github.Github", mock_github):
-        service = GitHubService(config)
-        assert not service.is_available() 
+    # Test with disabled GitHub release
+    github_service.config.github_release = False
+    assert not github_service.is_available()
+
+    # Test with no token
+    github_service.config.github_token = None
+    assert not github_service.is_available()

@@ -8,7 +8,6 @@ from autoscribe.cli.main import cli
 from autoscribe.core.changelog import ChangelogService
 from autoscribe.core.git import GitService
 from autoscribe.models.changelog import Category, Change, Version
-from autoscribe.models.config import AutoScribeConfig
 from autoscribe.services.github import GitHubService
 from autoscribe.services.openai import AIService
 
@@ -168,4 +167,4 @@ def test_help_command(runner):
     result = runner.invoke(cli, ["generate", "--help"])
     assert result.exit_code == 0
     assert "Usage:" in result.output
-    assert "--version" in result.output 
+    assert "--version" in result.output

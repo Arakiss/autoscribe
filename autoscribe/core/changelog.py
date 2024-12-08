@@ -1,9 +1,9 @@
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import cast
 
 from ..models.changelog import Category, Change, Changelog, Version
-from ..models.config import AutoScribeConfig
+from ..models.config import AutoScribeConfig, CategoryType
 from ..services.openai import AIService
 from .git import GitService
 
@@ -46,7 +46,7 @@ class ChangelogService:
         self,
         config: AutoScribeConfig,
         git_service: GitService,
-        ai_service: Optional[AIService] = None,
+        ai_service: AIService | None = None,
     ):
         """Initialize the changelog service."""
         self.config = config
@@ -62,16 +62,16 @@ class ChangelogService:
             return Changelog()
         return Changelog()
 
-    def _categorize_changes(self, changes: List[Change]) -> Dict[str, List[Change]]:
+    def _categorize_changes(self, changes: list[Change]) -> dict[str, list[Change]]:
         """Categorize changes based on their type following Keep a Changelog."""
-        categories: Dict[str, List[Change]] = {cat: [] for cat in self.config.categories}
+        categories: dict[str, list[Change]] = {cat: [] for cat in self.config.categories}
 
         for change in changes:
             if change.breaking:
                 # Breaking changes go into Changed category with a BREAKING CHANGE prefix
                 categories["Changed"].append(change)
                 continue
-            
+
             # Get category from type mapping, fallback to Changed if not found
             category = self.TYPE_TO_CATEGORY.get(change.type, "Changed")
             # Only add to category if it's configured
@@ -101,10 +101,14 @@ class ChangelogService:
             number=version_number,
             date=datetime.now(),
             categories=[
-                Category(name=name, changes=changes)
+                Category(name=cast(CategoryType, name), changes=changes)
                 for name, changes in categorized_changes.items()
+                if name in self.config.categories  # Only include configured categories
             ],
             breaking_changes=any(change.breaking for change in changes),
+            summary=None,  # Will be set by AI if available
+            yanked=False,
+            compare_url=None,  # Will be set by GitHub service if available
         )
 
         # Generate summary with AI if available
@@ -132,11 +136,11 @@ class ChangelogService:
         with open(self.config.output, "w") as f:
             f.write(output)
 
-    def get_version(self, version_number: str) -> Optional[Version]:
+    def get_version(self, version_number: str) -> Version | None:
         """Get a specific version from the changelog."""
         return self.changelog.get_version(version_number)
 
-    def get_latest_version(self) -> Optional[Version]:
+    def get_latest_version(self) -> Version | None:
         """Get the latest version from the changelog."""
         return self.changelog.get_latest_version()
 
@@ -153,7 +157,7 @@ class ChangelogService:
         for category in version.categories:
             if not category.changes:
                 continue
-                
+
             output += f"### {category.name}\n\n"
             for change in category.changes:
                 prefix = "BREAKING CHANGE: " if change.breaking else ""
@@ -163,6 +167,6 @@ class ChangelogService:
 
         return output
 
-    def get_unreleased_changes(self) -> Optional[Version]:
+    def get_unreleased_changes(self) -> Version | None:
         """Get the unreleased changes."""
         return self.changelog.get_version("Unreleased")

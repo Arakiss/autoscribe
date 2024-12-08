@@ -1,6 +1,6 @@
-from typing import List, Optional
-from openai import OpenAI, OpenAIError
-from pydantic import BaseModel
+"""Service for interacting with OpenAI API."""
+
+from openai import APIError, AuthenticationError, OpenAI, OpenAIError
 
 from ..models.changelog import Change, Version
 from ..models.config import AutoScribeConfig
@@ -8,176 +8,147 @@ from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+
 class AIService:
-    """Service for AI-powered changelog enhancements."""
+    """Service for interacting with OpenAI API."""
 
     def __init__(self, config: AutoScribeConfig):
         """Initialize the AI service."""
         self.config = config
-        self.client = None
+        self._client: OpenAI | None = None
         if config.ai_enabled and config.openai_api_key:
             try:
-                self.client = OpenAI(api_key=config.openai_api_key)
-                # Test connection with a minimal request
-                self.client.models.list()
-                logger.info("Successfully initialized OpenAI client")
+                self._client = OpenAI(api_key=config.openai_api_key)
+                # Test connection
+                if self._client is not None:
+                    self._client.models.list()
+                    logger.info("Successfully initialized OpenAI client")
             except OpenAIError as e:
                 logger.error(f"Failed to initialize OpenAI client: {e}")
-                self.client = None
+                self._client = None
             except Exception as e:
                 logger.error(f"Unexpected error initializing OpenAI client: {e}")
-                self.client = None
+                self._client = None
 
-    def enhance_change_description(self, change: Change) -> Change:
-        """Enhance a change description using AI."""
+    def enhance_changes(self, changes: list[Change]) -> list[Change]:
+        """Enhance change descriptions with AI."""
         if not self.is_available():
-            logger.debug("AI enhancement skipped: service not available")
-            return change
-
-        prompt = f"""
-        Given this git commit:
-        Type: {change.type}
-        Scope: {change.scope or 'N/A'}
-        Message: {change.commit_message}
-        Breaking: {change.breaking}
-
-        Rewrite it as a clear, user-friendly changelog entry that:
-        1. Starts with a verb in present tense
-        2. Is concise but descriptive
-        3. Avoids technical jargon unless necessary
-        4. Highlights breaking changes if any
-        5. Maintains the original meaning
-
-        Respond with ONLY the enhanced description, nothing else.
-        """
+            return changes
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.config.ai_model,
-                messages=[
-                    {"role": "system", "content": "You are a technical writer specializing in changelog entries."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=100,
-                n=1,
-            )
+            if self._client is None:
+                return changes
 
-            if response.choices and response.choices[0].message.content:
-                enhanced_description = response.choices[0].message.content.strip()
-                # Create a new Change object to avoid modifying the original
-                return Change(
-                    description=enhanced_description,
-                    commit_hash=change.commit_hash,
-                    commit_message=change.commit_message,
-                    author=change.author,
-                    type=change.type,
-                    scope=change.scope,
-                    breaking=change.breaking,
-                    ai_enhanced=True,
-                    references=change.references,
+            enhanced_changes = []
+            for change in changes:
+                prompt = (
+                    "Given the following commit message, please provide a more descriptive "
+                    "and user-friendly explanation of the changes:\n\n"
+                    f"Message: {change.commit_message}\n"
+                    f"Description: {change.description}\n\n"
+                    "Please provide a concise, clear description that explains the "
+                    "purpose and impact of this change."
                 )
-            else:
-                logger.warning("OpenAI returned empty response")
-                return change
 
+                response = self._client.chat.completions.create(
+                    model=self.config.ai_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a helpful assistant that explains code changes."
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+
+                content = response.choices[0].message.content
+                if content is None:
+                    logger.warning("Received empty response from OpenAI")
+                    continue
+
+                enhanced_description = content.strip()
+                enhanced_changes.append(
+                    Change(
+                        description=enhanced_description,
+                        commit_hash=change.commit_hash,
+                        commit_message=change.commit_message,
+                        author=change.author,
+                        type=change.type,
+                        scope=change.scope,
+                        breaking=change.breaking,
+                        ai_enhanced=True,
+                        references=change.references,
+                    )
+                )
+
+            return enhanced_changes
         except OpenAIError as e:
-            logger.error(f"OpenAI API error enhancing description: {e}")
-            return change
+            logger.error(f"Failed to enhance changes: {e}")
+            return changes
         except Exception as e:
-            logger.error(f"Unexpected error enhancing description: {e}")
-            return change
+            logger.error(f"Unexpected error enhancing changes: {e}")
+            return changes
 
     def generate_version_summary(self, version: Version) -> Version:
-        """Generate a summary for a version using AI."""
+        """Generate a summary for the version using AI."""
         if not self.is_available():
-            logger.debug("Version summary generation skipped: service not available")
             return version
 
-        changes_text = "\n".join(
-            f"- {change.description} ({change.type})"
-            for category in version.categories
-            for change in category.changes
-        )
+        try:
+            if self._client is None:
+                return version
 
-        if not changes_text:
-            logger.debug("No changes to summarize")
-            return Version(
-                number=version.number,
-                date=version.date,
-                categories=version.categories,
-                summary="No changes in this version.",
-                breaking_changes=version.breaking_changes,
-                yanked=version.yanked,
-                compare_url=version.compare_url,
+            # Create a prompt with the version information
+            changes_text = ""
+            for category in version.categories:
+                if not category.changes:
+                    continue
+                changes_text += f"\n{category.name}:\n"
+                for change in category.changes:
+                    changes_text += f"- {change.description}\n"
+
+            prompt = (
+                "Please provide a concise summary of the following changes "
+                "for a release:\n\n"
+                f"Version: {version.number}\n"
+                f"Changes:{changes_text}\n\n"
+                "Please provide a high-level overview that captures the main themes "
+                "and significant changes in this release."
             )
 
-        prompt = f"""
-        Given these changes for version {version.number}:
-
-        {changes_text}
-
-        Generate a concise, user-friendly summary that:
-        1. Highlights the most important changes
-        2. Mentions breaking changes if any
-        3. Provides context about the impact
-        4. Uses clear, non-technical language
-        5. Is no more than 2-3 sentences
-
-        Respond with ONLY the summary, nothing else.
-        """
-
-        try:
-            response = self.client.chat.completions.create(
+            response = self._client.chat.completions.create(
                 model=self.config.ai_model,
                 messages=[
-                    {"role": "system", "content": "You are a technical writer specializing in release notes."},
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant that summarizes software releases."
+                    },
+                    {"role": "user", "content": prompt},
                 ],
-                temperature=0.7,
-                max_tokens=150,
-                n=1,
             )
 
-            if response.choices and response.choices[0].message.content:
-                summary = response.choices[0].message.content.strip()
-            else:
-                logger.warning("OpenAI returned empty response for version summary")
-                summary = "No significant changes in this version."
+            content = response.choices[0].message.content
+            if content is None:
+                logger.warning("Received empty response from OpenAI")
+                return version
 
+            version.summary = content.strip()
+            return version
         except OpenAIError as e:
-            logger.error(f"OpenAI API error generating summary: {e}")
-            summary = "No significant changes in this version."
+            logger.error(f"Failed to generate version summary: {e}")
+            return version
         except Exception as e:
-            logger.error(f"Unexpected error generating summary: {e}")
-            summary = "No significant changes in this version."
-
-        # Create a new Version object to avoid modifying the original
-        return Version(
-            number=version.number,
-            date=version.date,
-            categories=version.categories,
-            summary=summary,
-            breaking_changes=version.breaking_changes,
-            yanked=version.yanked,
-            compare_url=version.compare_url,
-        )
-
-    def enhance_changes(self, changes: List[Change]) -> List[Change]:
-        """Enhance multiple changes in batch."""
-        if not self.is_available():
-            logger.debug("Batch enhancement skipped: service not available")
-            return changes
-        return [self.enhance_change_description(change) for change in changes]
+            logger.error(f"Unexpected error generating version summary: {e}")
+            return version
 
     def is_available(self) -> bool:
-        """Check if AI service is available and configured."""
+        """Check if the AI service is available."""
         if not self.config.ai_enabled or not self.config.openai_api_key:
             return False
-        if not self.client:
+        if not self._client:
             return False
         try:
-            self.client.models.list()
+            self._client.models.list()
             return True
-        except:
+        except (APIError, AuthenticationError):
             return False

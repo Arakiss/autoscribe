@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from autoscribe.core.git import GitCommit, GitService
+from autoscribe.core.git import GitCommandError, GitCommit, GitService
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ def test_run_command(mock_run, git_service):
 
     # Test command failure
     mock_run.side_effect = Exception("Command failed")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(GitCommandError):
         git_service._run_command("git status")
 
 
@@ -158,7 +158,7 @@ def test_tag_operations(mock_run, git_service):
     mock_run.assert_called_with(
         'git tag -a v1.0.0 -m "Release v1.0.0"',
         shell=True,
-        cwd=None,
+        cwd=git_service.cwd,
         capture_output=True,
         text=True,
         check=True,
@@ -169,7 +169,7 @@ def test_tag_operations(mock_run, git_service):
     mock_run.assert_called_with(
         "git push origin v1.0.0",
         shell=True,
-        cwd=None,
+        cwd=git_service.cwd,
         capture_output=True,
         text=True,
         check=True,
@@ -210,4 +210,4 @@ def test_remote_operations(mock_run, git_service):
     assert git_service.get_remote_url() is None
     owner, repo = git_service.extract_repo_info()
     assert owner is None
-    assert repo is None 
+    assert repo is None

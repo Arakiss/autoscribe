@@ -2,7 +2,6 @@
 
 import logging
 import sys
-from typing import Optional
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -14,7 +13,7 @@ default_console = Console(stderr=True)
 def setup_logger(
     name: str = "autoscribe",
     level: int = logging.INFO,
-    console: Optional[Console] = None,
+    console: Console | None = None,
 ) -> logging.Logger:
     """Set up a logger with rich formatting."""
     # Create logger
@@ -58,8 +57,8 @@ def get_logger(name: str = "autoscribe") -> logging.Logger:
 def log_exception(
     logger: logging.Logger,
     exc: Exception,
-    message: Optional[str] = None,
-    exit_code: Optional[int] = None,
+    message: str | None = None,
+    exit_code: int | None = None,
 ) -> None:
     """Log an exception and optionally exit."""
     if message:

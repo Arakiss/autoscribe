@@ -1,7 +1,6 @@
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple
 
 
 class VersionType(str, Enum):
@@ -19,8 +18,8 @@ class Version:
     major: int
     minor: int
     patch: int
-    prerelease: Optional[str] = None
-    build: Optional[str] = None
+    prerelease: str | None = None
+    build: str | None = None
 
     def __str__(self) -> str:
         """Convert version to string."""
@@ -67,7 +66,7 @@ class Version:
         else:  # PATCH
             return Version(self.major, self.minor, self.patch + 1)
 
-    def _compare_prerelease(self, other: Optional[str]) -> int:
+    def _compare_prerelease(self, other: str | None) -> int:
         """Compare prerelease strings."""
         if self.prerelease is None and other is None:
             return 0
@@ -81,16 +80,16 @@ class Version:
         """Compare versions following SemVer 2.0.0 rules."""
         if not isinstance(other, Version):
             return NotImplemented
-        
+
         # Compare major.minor.patch
         if (self.major, self.minor, self.patch) != (other.major, other.minor, other.patch):
             return (self.major, self.minor, self.patch) < (other.major, other.minor, other.patch)
-        
+
         # Compare prereleases
         return self._compare_prerelease(other.prerelease) < 0
 
 
-def extract_version(content: str, pattern: str) -> Optional[str]:
+def extract_version(content: str, pattern: str) -> str | None:
     """Extract version from content using pattern."""
     match = re.search(pattern, content)
     return match.group(1) if match else None
@@ -98,10 +97,10 @@ def extract_version(content: str, pattern: str) -> Optional[str]:
 
 def update_version_in_file(
     file_path: str, new_version: str, pattern: str
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Update version in a file."""
     try:
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             content = f.read()
 
         # Create pattern that captures the version part
